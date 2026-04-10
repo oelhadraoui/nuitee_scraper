@@ -26,7 +26,7 @@ load_dotenv()
 T = {
     "page_load":          60_000,
     "network_idle":       60_000,
-    "url_change":         45_000,   # bumped: London/large cities take longer to redirect
+    "url_change":         90_000,   # bumped: London/large cities take longer to redirect
     "first_card":         45_000,   # bumped: large cities load slower
     "selector_wait":      45_000,
     "element_visible":     5_000,
@@ -61,10 +61,6 @@ BROWSER_ARGS = [
     "--blink-settings=imagesEnabled=false,fontsEnabled=false",
     "--disable-gpu",
     "--disable-setuid-sandbox",
-    # --single-process INTENTIONALLY REMOVED:
-    # It forces all renderer processes into the browser process, which causes
-    # FATAL: Check failed: render_process_host->InSameStoragePartition
-    # when multiple BrowserContexts are created/destroyed in the same session.
     "--no-zygote",
 ]
 
@@ -151,8 +147,6 @@ def _parse_price(text: str, aggressive: bool = False) -> float | None:
 
 def _parse_rooms_config(params: dict) -> list[int]:
     """
-    FIX #2 — flexible rooms / adults input format.
-
     Accepted formats in input.json:
       A) Simple (same adults in every room):
          { "rooms": 2, "adults": 3 }
@@ -253,112 +247,166 @@ class PriceCompare:
         checkin_dt  = datetime.strptime(self.checkin,  "%Y-%m-%d")
         checkout_dt = datetime.strptime(self.checkout, "%Y-%m-%d")
 
-        async def _read_visible_month() -> tuple[int, int] | None:
-            for sel in [".p-datepicker-title", ".p-datepicker-month",
-                        "[class*='monthYear']", "[class*='CalendarMonth_caption']",
-                        "[class*='calendar'] h2", "[class*='datepicker'] h2"]:
+        async def _read_visible_month_year() -> tuple[int, int] | None:
+            header_selectors = [
+                '.p-datepicker-title', '.p-datepicker-month',
+                '[class*="monthYear"]', '[class*="month-year"]',
+                '[class*="MonthYear"]', '[class*="CalendarMonth_caption"]',
+                'table caption',
+                '[class*="calendar"] h2', '[class*="calendar"] h3',
+                '[class*="datepicker"] h2', '[class*="datepicker"] h3',
+                '[class*="picker"] h2',
+            ]
+            found = []
+            for sel in header_selectors:
                 try:
-                    for t in await page.locator(sel).all_inner_texts():
+                    texts = await page.locator(sel).all_inner_texts()
+                    for t in texts:
                         t = t.strip()
                         for fmt in ("%B %Y", "%b %Y"):
                             try:
                                 dt = datetime.strptime(t, fmt)
-                                return (dt.year, dt.month)
+                                found.append((dt.year, dt.month))
+                                break
                             except ValueError:
                                 pass
-                except Exception:
+                except:
                     pass
+            if found:
+                return min(found)
+            try:
+                all_text = await page.evaluate("""
+                    () => {
+                        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+                        const texts = [];
+                        let node;
+                        while (node = walker.nextNode()) {
+                            const t = node.textContent.trim();
+                            if (t.length > 3) texts.push(t);
+                        }
+                        return texts;
+                    }
+                """)
+                months = ["January","February","March","April","May","June",
+                          "July","August","September","October","November","December"]
+                for t in all_text:
+                    for m in months:
+                        match = re.match(rf'^{m}\s+(\d{{4}})$', t.strip())
+                        if match:
+                            found.append((int(match.group(1)), months.index(m) + 1))
+                if found:
+                    return min(found)
+            except:
+                pass
             return None
 
-        async def _click_next():
-            for sel in ["button.p-datepicker-next",
-                        'button[aria-label="Next Month"]',
-                        'button[aria-label="Next month"]',
-                        "button[class*='next']",
-                        ".p-datepicker-header button:last-child"]:
+        async def _click_next_month():
+            next_selectors = [
+                'button.p-datepicker-next',
+                'button[aria-label="Next Month"]',
+                'button[aria-label="Next month"]',
+                'button[aria-label="next month"]',
+                'button[class*="next"]', 'button[class*="Next"]',
+                '[data-testid="next-month"]',
+                'button:has(svg[class*="right"])',
+                'button:has(svg[class*="chevron-right"])',
+                'button:has(svg[class*="arrow-right"])',
+                '.p-datepicker-header button:last-child',
+            ]
+            for sel in next_selectors:
                 try:
                     btn = page.locator(sel).first
-                    if await btn.is_visible(timeout=T["element_visible"]):
+                    if await btn.is_visible(timeout=400):
                         await btn.click()
-                        await page.wait_for_timeout(T["next_month_btn"])
+                        await page.wait_for_timeout(380)
                         return True
-                except Exception:
+                except:
                     pass
             return False
 
-        async def _navigate_to(target: datetime):
-            iso = target.strftime("%Y-%m-%d")
+        async def _navigate_to_month(target_dt: datetime):
+            iso = target_dt.strftime("%Y-%m-%d")
             for _ in range(36):
                 try:
-                    if await page.locator(f'[data-date="{iso}"]').first.is_visible(timeout=400):
+                    cell = page.locator(f'[data-date="{iso}"]').first
+                    if await cell.is_visible(timeout=300):
                         return
-                except Exception:
+                except:
                     pass
-                cur = await _read_visible_month()
+                cur = await _read_visible_month_year()
                 if cur is None:
-                    await _click_next()
+                    await _click_next_month()
                     continue
-                if target.year * 12 + target.month <= cur[0] * 12 + cur[1] + 1:
+                cur_total = cur[0] * 12 + cur[1]
+                tgt_total = target_dt.year * 12 + target_dt.month
+                if tgt_total <= cur_total + 1:
                     return
-                await _click_next()
+                if not await _click_next_month():
+                    return
 
         async def _click_day(dt: datetime):
             iso = dt.strftime("%Y-%m-%d")
-            # Strategy 1: V-Calendar ID class
             try:
-                cell = page.locator(f".vc-day.id-{iso} .vc-day-content").first
-                if await cell.is_visible(timeout=T["element_visible"]):
+                day_selector = f".vc-day.id-{iso} .vc-day-content"
+                cell = page.locator(day_selector).first
+                if await cell.is_visible(timeout=2000):
                     await cell.click(force=True)
                     return
-            except Exception:
-                pass
-            # Strategy 2: aria-label
+            except: pass
             try:
-                cell = page.get_by_role("button", name=dt.strftime("%A, %b %-d, %Y")).first
-                if await cell.is_visible(timeout=T["element_visible"]):
+                aria_label = dt.strftime("%A, %b %-d, %Y")
+                cell = page.get_by_role("button", name=aria_label).first
+                if await cell.is_visible(timeout=1000):
                     await cell.click()
                     return
-            except Exception:
-                pass
-            # Strategy 3: JS
-            await page.evaluate("""
-                (iso) => {
-                    const el = document.querySelector(`.id-${iso} .vc-day-content`);
-                    if (el) { el.click(); return; }
-                    const day = iso.split('-')[2].replace(/^0/, '');
-                    for (const d of document.querySelectorAll('.vc-day-content')) {
-                        if (d.textContent.trim() === day &&
-                            !d.parentElement.classList.contains('is-not-in-month')) {
-                            d.click(); return;
-                        }
-                    }
-                }
-            """, iso)
-
-        await _navigate_to(checkin_dt)
-        await page.wait_for_timeout(T["after_day_click"])
-        await _click_day(checkin_dt)
-        await page.wait_for_timeout(T["after_day_click"])
-        await _navigate_to(checkout_dt)
-        await page.wait_for_timeout(T["after_day_click"])
-        await _click_day(checkout_dt)
-        await page.wait_for_timeout(T["after_day_click"])
-
-        # Date confirm button
-        for sel in ('button:has-text("Done")', 'button:has-text("Apply")',
-                    '[data-testid="date-apply"]', ".p-datepicker-buttonbar button"):
+            except: pass
             try:
-                btn = page.locator(sel).first
-                if await btn.is_visible(timeout=T["confirm_btn"]):
+                await page.evaluate("""
+                    (targetIso) => {
+                        const selector = `.id-${targetIso} .vc-day-content`;
+                        const el = document.querySelector(selector);
+                        if (el) { el.click(); return true; }
+                        const dayNum = targetIso.split('-')[2].replace(/^0/, '');
+                        const allDays = document.querySelectorAll('.vc-day-content');
+                        for (const d of allDays) {
+                            if (d.textContent.trim() === dayNum && !d.parentElement.classList.contains('is-not-in-month')) {
+                                d.click();
+                                return 'text-match';
+                            }
+                        }
+                        return false;
+                    }
+                """, iso)
+            except:
+                pass
+
+        await _navigate_to_month(checkin_dt)
+        await page.wait_for_timeout(300)
+        await _click_day(checkin_dt)
+        await page.wait_for_timeout(500)
+
+        await _navigate_to_month(checkout_dt)
+        await page.wait_for_timeout(300)
+        await _click_day(checkout_dt)
+        await page.wait_for_timeout(500)
+
+        for confirm_sel in (
+            'button[aria-label="Done"]',
+            'button:has-text("Done")',
+            'button:has-text("Apply")',
+            '[data-testid="date-apply"]',
+            '.p-datepicker-buttonbar button',
+        ):
+            try:
+                btn = page.locator(confirm_sel).first
+                if await btn.is_visible(timeout=600):
                     await btn.click()
                     break
-            except Exception:
+            except:
                 pass
 
-        # ── Guests ─────────────────────────────────────────────────────
-        # FIX #2: use rooms_config to set per-room adult counts
         await page.locator('[data-testid="guests-button"]').click()
-        await page.wait_for_timeout(T["after_guests_open"])
+        await page.wait_for_timeout(600)
 
         async def _set_adults(room_idx: int, target: int):
             panel    = page.locator(f'[id="room-{room_idx + 1}"]')
@@ -386,8 +434,6 @@ class PriceCompare:
         await page.wait_for_timeout(T["after_guests_apply"])
 
         # ── Wait for results page ──────────────────────────────────────
-        # FIX #3: wait_for_url can race on large cities — use a robust wait
-        # that accepts EITHER the URL change OR the cards appearing.
         try:
             await page.wait_for_url(
                 lambda url: "placeId" in url or "/hotels" in url,

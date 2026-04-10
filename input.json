@@ -1,21 +1,5 @@
 [
   {
-    "city": "Madrid",
-    "checkin": "2026-09-09",
-    "checkout": "2026-09-10",
-    "adults": 4,
-    "rooms": 2
-  },
-  {
-    "city": "Madrid",
-    "checkin": "2026-09-09",
-    "checkout": "2026-09-10",
-    "rooms_config": [
-      3,
-      2
-    ]
-  },
-  {
     "city": "London",
     "checkin": "2026-09-09",
     "checkout": "2026-09-10",
