@@ -12,7 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 RUN playwright install chromium --with-deps
 
 # Copy project files
-COPY scraper.py .
+COPY nuitee_scraper.py .
 COPY input.json .
 
 # Output directory — mount a host volume here to persist data.csv
@@ -24,4 +24,4 @@ RUN useradd -m scraper
 RUN chown -R scraper:scraper /app
 USER scraper
 
-CMD ["python", "scraper.py"]
+CMD ["python", "nuitee_scraper.py"]

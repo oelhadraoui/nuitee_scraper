@@ -1,0 +1,12 @@
+services:
+  scraper:
+    build: .
+    container_name: hotel-scraper-prod
+    restart: on-failure:3
+    user: "${UID:-1000}:${GID:-1000}"
+    env_file:
+      - .env
+    volumes:
+      - ./output:/app/output
+      - ./input.json:/app/input.json
+    command: sh -c "python3 nuitee_scraper.py > /app/output/container.log 2>&1"
