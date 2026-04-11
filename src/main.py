@@ -92,7 +92,7 @@ POPUP_SELECTORS = ", ".join([
     '#b2searchresultsPage button[class*="close"]',
 ])
 
-OUTPUT_CSV = Path(__file__).parent / "data.csv"
+OUTPUT_CSV = Path("/app/output/prices.csv")
 CSV_HEADER = [
     "Hotel Name", "City", "Check-in", "Check-out",
     "Adults per Room", "Rooms",
@@ -863,7 +863,7 @@ class PriceCompare:
     async def run(self):
         async with async_playwright() as p:
             browser = await p.chromium.launch(
-                headless=False,
+                headless=True,
                 slow_mo=0,
                 args=BROWSER_ARGS,
             )
@@ -907,7 +907,13 @@ class PriceCompare:
 if __name__ == "__main__":
     _ensure_csv_header()
 
-    input_path = Path(__file__).parent / "input.json"
+    # input passed via --input flag load them
+    # old code before using docker
+    input_path = Path("/app/input.json")
+    if not input_path.is_file():
+        print(f"[ERROR] Input file not found at {input_path}")
+        exit(1)
+
     with input_path.open(encoding="utf-8") as f:
         inputs = json.load(f)
 

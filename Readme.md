@@ -1,181 +1,256 @@
-# Hotel Price Comparator — Nuitee vs Booking.com
+# 🏨 Hotel Price Scraper
 
-Async Playwright scraper that compares hotel prices between a **Nuitee white-label portal** and **Booking.com** across world cities, writing results to `data.csv` hotel-by-hotel so no data is lost on interruption. Built to run overnight in a Docker container on an Oracle Cloud server.
-
----
-
-## How it works
-
-```
-input.json  →  Nuitee portal (scroll all cards)  →  Booking.com (per hotel)  →  data.csv
-```
-
-1. Reads one or more search configs from `input.json`
-2. For each config, opens the Nuitee portal, fills destination / dates / guests, scrolls until all hotel cards are loaded
-3. For every hotel found, searches Booking.com with the same parameters and extracts the MAD price
-4. Appends a row to `data.csv` immediately after each hotel — if the script crashes mid-run, all previous rows are already saved
+A production-grade, headless-browser scraper that compares hotel prices between
+**Nuitee** and **Booking.com** across dozens of cities simultaneously. Built with
+Python + Playwright, containerised with Docker, and optimised for Oracle Cloud
+Free Tier (Ampere A1 ARM64).
 
 ---
 
-## Timeout strategy
+## Table of Contents
 
-All timeouts live in a single `T` dictionary at the top of `scraper.py`. They are tuned for a remote Oracle server with variable latency:
+1. [What it does](#what-it-does)
+2. [Architecture](#architecture)
+3. [Project structure](#project-structure)
+4. [Quick start — Local](#quick-start--local)
+5. [Quick start — Docker](#quick-start--docker)
+6. [Input format](#input-format)
+7. [Environment variables](#environment-variables)
+8. [Output format](#output-format)
+9. [Makefile reference](#makefile-reference)
+10. [Troubleshooting](#troubleshooting)
 
-| Group | Timeout | Why |
+---
+
+## What it does
+
+For each city in `input.json` the scraper:
+
+1. Opens **Nuitee.com** in an isolated browser context, logs in, and searches
+   for hotels on the requested dates.
+2. Harvests every hotel name and nightly price from the results page —
+   even when the list contains 300+ entries rendered via a virtualised DOM.
+3. Opens **Booking.com** in a second isolated context and performs the same
+   search.
+4. Merges the two datasets on hotel name and writes a CSV with columns:
+   `city, hotel_name, nuitee_price, booking_price, diff, diff_pct`.
+
+---
+
+## Architecture
+
+### Dual-source price collection
+
+```
+input.json
+    │
+    ├─▶ NuiteeScraper ──▶ API interception (primary)
+    │                 └─▶ DOM Scroll & Harvest (fallback)
+    │
+    └─▶ BookingScraper ─▶ DOM Scroll & Harvest
+    │
+    └─▶ Merger ──▶ output/results_YYYY-MM-DD.csv
+```
+
+### API Interception (Nuitee primary path)
+
+The scraper registers a Playwright `route` handler that intercepts XHR/fetch
+responses matching `/api/hotels` or `/v2/search`. When the browser fires the
+hotel-list request, the handler parses the JSON payload directly — no DOM
+interaction required. This path is instantaneous and returns 100 % of results
+in a single pass.
+
+### Scroll & Harvest (DOM fallback)
+
+Used when the API path returns no data (auth token rotation, CDN changes, etc.).
+
+**The challenge:** Nuitee uses a *virtualised list* (PrimeVue `VirtualScroller`).
+Only ~12–15 cards exist in the DOM at any moment; as you scroll, nodes are
+recycled. A naïve `locator.all()` therefore never sees more than one screen-full
+of data.
+
+**The solution — leapfrog harvesting:**
+
+```
+while unique_count < total_expected:
+    1. Read the last 20 DOM nodes  (tail-window, O(1) per pass)
+    2. For each unseen card → extract name + price → add to seen_names set
+    3. If new cards were found → scroll SCROLL_MIN (400 px) — stay precise
+    4. If no new cards        → increase scroll step by 200 px (up to 1800 px)
+    5. If 6 consecutive empty passes → list exhausted → break
+```
+
+Key complexity properties:
+
+| Operation | Naïve approach | Optimised approach |
 |---|---|---|
-| `page_load` | 60 s | Full page navigation — remote servers can be slow |
-| `network_idle` | 60 s | Nuitee portal waits for all XHR before showing results |
-| `first_card` | 30 s | Booking.com property cards may load after JS hydration |
-| `selector_wait` | 30 s | Nuitee hotel cards wait |
-| `scroll_settle` | 2 s | After each scroll, give lazy-loader time to fetch next batch |
-| `element_visible` | 5 s | Per-element checks (price, buttons) |
-| `after_goto` | 2 s | Dwell on Booking homepage — reduces cold-session fingerprinting |
+| Cards inspected per pass | All N cards | Last 20 cards (constant) |
+| Duplicate check | O(N) list scan | O(1) set lookup |
+| Overall complexity | O(N²) | O(N) |
 
-To tune for a faster network, reduce `scroll_settle` and `after_goto`. To handle an extremely slow server, increase `page_load` and `first_card`.
+### Browser context isolation
+
+Each city runs in its own `browser.new_context()`. Contexts share the same
+browser process (saving ~200 MB RAM vs one process per city) but have
+completely separate cookies, storage, and network state. This prevents session
+bleed between concurrent city runs.
 
 ---
 
 ## Project structure
 
 ```
-hotel-price-comparator/
-├── scraper.py          # Main script
-├── input.json          # Search configs (50 world cities pre-loaded)
-├── Dockerfile          # Container definition
+.
+├── src/
+│   ├── main.py              # Entry point — reads input.json, fans out tasks
+│   ├── nuitee_scraper.py    # Nuitee login + harvest logic
+│   ├── booking_scraper.py   # Booking.com harvest logic
+│   ├── merger.py            # Joins the two datasets, writes CSV
+│   └── config.py            # Timeouts, selectors, constants
+├── output/                  # CSV results + per-run logs (git-ignored)
+├── input.json               # City search list (see Input format below)
+├── .env                     # Secrets — never commit this
+├── .env.example             # Template to copy
+├── Dockerfile
+├── docker-compose.yml
+├── Makefile
 ├── requirements.txt
-├── README.md
-└── data.csv            # Output (auto-created on first run)
+└── README.md
 ```
 
 ---
 
-## Running locally
+## Quick start — Local
 
 ### Prerequisites
 
 - Python 3.11+
-- pip
+- Node.js is **not** required — Playwright's Python package bundles everything.
 
 ```bash
-# 1. Create and activate a virtual environment
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
+# 1. Clone
+git clone https://github.com/oelhadraoui/nuitee_scraper.git
+cd hotel-price-scraper
 
-# 2. Install dependencies
+# 2. Virtual environment
+python -m venv .venv
+source .venv/bin/activate
+
+# 3. Python dependencies
 pip install -r requirements.txt
 
-# 3. Install Chromium
+# 4. Playwright browser + system libraries
+playwright install-deps chromium
 playwright install chromium
 
-# 4. Run
-python scraper.py
+# 5. Configuration
+nano .env 
+
+# 6. Run
+python src/main.py --input input.json
+```
+
+Results are written to `output/results_YYYY-MM-DD.csv`.
+
+---
+
+## Quick start — Docker
+
+### Prerequisites
+
+- Docker 24+ with the Compose plugin (`docker compose version`)
+- `make` (pre-installed on macOS/Linux; Windows users: use Git Bash or WSL)
+
+```bash
+# 1. Configure
+cp .env.example .env
+$EDITOR .env
+
+# 2. Build the image
+make build
+
+# 3. Run
+make start
+# or
+make run
+
+# 4. View results
+ls output/
 ```
 
 ---
 
-## Running in Docker (Oracle server)
+## Input format
 
-### Build the image
+`input.json` is an array of search jobs. Each object represents one city search:
 
-```bash
-docker build -t hotel-scraper .
-```
-
-### Run with persistent output
-
-```bash
-# Create a local output folder first
-mkdir -p $(pwd)/output
-
-# Run the container — data.csv will be written to ./output/
-docker run --rm \
-  -v $(pwd)/output:/app/output \
-  -v $(pwd)/input.json:/app/input.json \
-  hotel-scraper
-```
-
-### Run detached (overnight job)
-
-```bash
-docker run -d \
-  --name hotel-scraper-run \
-  --restart on-failure:3 \
-  -v $(pwd)/output:/app/output \
-  -v $(pwd)/input.json:/app/input.json \
-  hotel-scraper
-
-# Watch live output
-docker logs -f hotel-scraper-run
-
-# Check progress
-tail -f output/data.csv
-```
-
-### Update input and re-run without rebuilding
-
-```bash
-# Edit input.json locally, then:
-docker run --rm \
-  -v $(pwd)/output:/app/output \
-  -v $(pwd)/input.json:/app/input.json \
-  hotel-scraper
-```
-
----
-
-## Configuration — `input.json`
-
-Each object in the array is one city/date search run.
-
-```json
+```jsonc
 [
   {
-    "city": "Madrid",
-    "checkin": "2026-09-09",
-    "checkout": "2026-09-10",
-    "adults": 4,
-    "rooms": 1
+    "city":     "Madrid",       // Free-text city name
+    "checkin":  "2026-09-01",   // ISO-8601 date (YYYY-MM-DD)
+    "checkout": "2026-09-02",   // Must be after checkin
+    "adults":   2               // Number of adult guests (integer ≥ 1)
+  },
+  {
+    "city":     "London",
+    "checkin":  "2026-09-01",
+    "checkout": "2026-09-02",
+    "adults":   2
   }
 ]
 ```
 
-| Field      | Type   | Required | Description                    |
-|------------|--------|----------|--------------------------------|
-| `city`     | string | ✅       | Destination name               |
-| `checkin`  | string | ✅       | Check-in date `YYYY-MM-DD`     |
-| `checkout` | string | ✅       | Check-out date `YYYY-MM-DD`    |
-| `adults`   | int    | ❌       | Adults per room (default: `2`) |
-| `rooms`    | int    | ❌       | Number of rooms (default: `1`) |
+**Constraints:**
 
-The included `input.json` covers **50 world cities** across Europe, Middle East, Africa, Americas, and Asia-Pacific.
-
----
-
-## Output — `data.csv`
-
-| Column | Description |
-|---|---|
-| Hotel Name | Name as listed on Nuitee |
-| City | From `input.json` |
-| Check-in | From `input.json` |
-| Check-out | From `input.json` |
-| Adults | From `input.json` |
-| Rooms | From `input.json` |
-| Nuitee Price (MAD) | Scraped from the Nuitee portal |
-| Booking Price (MAD) | Scraped from Booking.com, or `N/A / SOLD OUT` |
-| Price Difference (MAD) | Booking − Nuitee (e.g. `+180.00`) |
-| Booking URL | Final Booking.com search URL for that hotel |
-
-> `data.csv` is appended to on every run. Delete it manually for a clean slate.
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `city` | string | ✅ | Matched against the site's autocomplete |
+| `checkin` | string | ✅ | `YYYY-MM-DD` |
+| `checkout` | string | ✅ | `YYYY-MM-DD`, must be > `checkin` |
+| `adults` | integer | ✅ | 1–9 |
 
 ---
 
-## Troubleshooting
+## Environment variables
 
-| Symptom | Fix |
+this is how `.env` should looks like:
+
+```dotenv
+# ── Nuitee link ─────────────────────────────────────────────────
+NUITEE_URL="https://amine-sadik-2911w.nuitee.link/"
+```
+
+---
+
+## Output format
+
+`output/results_YYYY-MM-DD.csv`:
+
+```
+city,hotel_name,nuitee_price,booking_price,diff,diff_pct
+Madrid,Hotel Gran Via,558.0,612.0,-54.0,-8.82
+Madrid,Ibis Madrid Centro,210.0,198.0,12.0,6.06
+London,The Savoy,950.0,,, 
+```
+
+- `diff` = `nuitee_price − booking_price` (negative → Nuitee is cheaper)
+- `diff_pct` = `diff / booking_price × 100`
+- Empty `booking_price` means the hotel was not found on Booking.com
+
+---
+
+## Makefile reference
+
+| Command | Description |
 |---|---|
-| Many `N/A / SOLD OUT` results | Increase `first_card` and `scroll_settle` in the `T` dict |
-| Script hangs on date picker | Calendar selectors may have changed — run locally with `headless=False` to inspect |
-| CAPTCHA on Booking.com | Increase `after_goto` to `4_000`–`6_000` ms |
-| Only 8–10 hotels from Nuitee | Increase `scroll_settle` to `3_000` ms on slow connections |
-| Container OOM on Oracle free tier | Add `--memory 2g` flag to `docker run` |
+| `make build` | Build (or rebuild) the Docker image |
+| `make start` | Run scraper in background, tail logs |
+| `make run` | Run in foreground — exits when done |
+| `make stop` | Stop the container (preserves output) |
+| `make logs` | Tail last 200 lines + live stream |
+| `make shell` | Open bash inside the container |
+| `make clean` | Stop + remove containers + clear `output/` |
+| `make nuke` | `clean` + remove image layers |
+
+---

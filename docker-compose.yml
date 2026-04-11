@@ -1,0 +1,60 @@
+version: "3.9"
+
+services:
+  scraper:
+    container_name: hotel_scraper
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+
+    # ── Chromium stability ─────────────
+    shm_size: "2gb"
+    ipc: host
+
+    # ── Environment ────────────────────────────────────────────────
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+
+    # ── Volumes ────────────────────────────────────────────────────
+    volumes:
+      - ./output:/app/output
+      - ./input.json:/app/input.json:ro
+      - ./src:/app/src:ro
+
+    # ── Working directory ──────────────────────────────────────────
+    working_dir: /app
+
+    # ── Entrypoint ─────────────────────────────────────────────────
+    command: ["python", "-u", "src/main.py", "--input", "input.json"]
+
+    deploy:
+      resources:
+        limits:
+          cpus: "3.5"
+          memory: 20G
+        reservations:
+          cpus: "1.0"
+          memory: 2G
+
+    # ── Restart policy ─────────────────────────────────────────────
+    restart: unless-stopped
+
+    # ── Health check ────────────
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "main.py"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+    # ── Logging ────────────────────────────────────────────────────
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
