@@ -331,7 +331,7 @@ class PriceCompare:
                     }
                 """)
                 months = ["January","February","March","April","May","June",
-                          "July","August","September","October","November","December"]
+                        "July","August","September","October","November","December"]
                 for t in all_text:
                     for m in months:
                         match = re.match(rf'^{m}\s+(\d{{4}})$', t.strip())
@@ -361,58 +361,127 @@ class PriceCompare:
                     btn = page.locator(sel).first
                     if await btn.is_visible(timeout=400):
                         await btn.click()
-                        await page.wait_for_timeout(380)
+                        await page.wait_for_timeout(T["next_month_btn"])
                         return True
                 except:
                     pass
             return False
 
-        async def _navigate_to_month(target_dt: datetime):
-            iso = target_dt.strftime("%Y-%m-%d")
-            for _ in range(36):
+        async def _is_active_date_visible(dt: datetime) -> bool:
+            """
+            Returns True only if the target date is visible in an ACTIVE month cell
+            (i.e., not a ghost/overflow day marked with .is-not-in-month).
+            Also verifies the visible month header matches the target year/month.
+            """
+            iso = dt.strftime("%Y-%m-%d")  # always zero-padded: 2026-05-08
+
+            # Strategy 1: strict CSS — cell must NOT carry the out-of-month class
+            for not_in_month_cls in ("is-not-in-month", "not-in-month", "outside-month"):
                 try:
-                    cell = page.locator(f'[data-date="{iso}"]').first
+                    cell = page.locator(
+                        f'.vc-day.id-{iso}:not(.{not_in_month_cls}) .vc-day-content'
+                    ).first
                     if await cell.is_visible(timeout=300):
-                        return
+                        return True
                 except:
                     pass
+
+            # Strategy 2: data-date attribute present and cell not out-of-month
+            try:
+                active = await page.evaluate("""
+                    (iso) => {
+                        const cells = document.querySelectorAll(`[data-date="${iso}"]`);
+                        for (const c of cells) {
+                            const parent = c.closest('.vc-day') || c.parentElement;
+                            if (
+                                parent &&
+                                !parent.classList.contains('is-not-in-month') &&
+                                !parent.classList.contains('not-in-month') &&
+                                !parent.classList.contains('outside-month')
+                            ) return true;
+                        }
+                        return false;
+                    }
+                """, iso)
+                if active:
+                    return True
+            except:
+                pass
+
+            return False
+
+        async def _navigate_to_month(target_dt: datetime):
+            for _ in range(36):
+                if await _is_active_date_visible(target_dt):
+                    return
+
                 cur = await _read_visible_month_year()
                 if cur is None:
                     await _click_next_month()
                     continue
+
                 cur_total = cur[0] * 12 + cur[1]
                 tgt_total = target_dt.year * 12 + target_dt.month
+
+                # In a dual-pane calendar the right pane shows cur+1, so stop
+                # advancing once the target month is either pane.
                 if tgt_total <= cur_total + 1:
                     return
+
                 if not await _click_next_month():
                     return
 
         async def _click_day(dt: datetime):
-            iso = dt.strftime("%Y-%m-%d")
-            try:
-                cell = page.locator(f".vc-day.id-{iso} .vc-day-content").first
-                if await cell.is_visible(timeout=2000):
-                    await cell.click(force=True)
-                    return
-            except: pass
+            iso = dt.strftime("%Y-%m-%d")  # always zero-padded
+
+            # Strategy 1: strict locator — active cell only, no ghost days
+            for not_in_month_cls in ("is-not-in-month", "not-in-month", "outside-month"):
+                try:
+                    cell = page.locator(
+                        f'.vc-day.id-{iso}:not(.{not_in_month_cls}) .vc-day-content'
+                    ).first
+                    if await cell.is_visible(timeout=2000):
+                        await cell.click(force=True)
+                        return
+                except:
+                    pass
+
+            # Strategy 2: aria-label (active cells typically have a full date label)
             try:
                 aria_label = dt.strftime("%A, %b %-d, %Y")
-                cell = page.get_by_role("button", name=aria_label).first
+                # Ensure we do NOT hit a ghost cell by scoping to a visible, active parent
+                cell = page.locator(
+                    f'[aria-label="{aria_label}"]'
+                    ':not(.is-not-in-month)'
+                ).first
                 if await cell.is_visible(timeout=1000):
                     await cell.click()
                     return
-            except: pass
+            except:
+                pass
+
+            # Strategy 3: JS fallback — explicitly skip out-of-month elements
             try:
                 await page.evaluate("""
                     (targetIso) => {
-                        const selector = `.id-${targetIso} .vc-day-content`;
-                        const el = document.querySelector(selector);
-                        if (el) { el.click(); return true; }
+                        // Strict selector first
+                        const strict = document.querySelector(
+                            `.vc-day.id-${targetIso}:not(.is-not-in-month) .vc-day-content`
+                        );
+                        if (strict) { strict.click(); return 'strict'; }
+
+                        // Fallback: match by day number but skip ghost cells
                         const dayNum = targetIso.split('-')[2].replace(/^0/, '');
                         const allDays = document.querySelectorAll('.vc-day-content');
                         for (const d of allDays) {
-                            if (d.textContent.trim() === dayNum &&
-                                !d.parentElement.classList.contains('is-not-in-month')) {
+                            const parent = d.closest('.vc-day');
+                            if (
+                                d.textContent.trim() === dayNum &&
+                                parent &&
+                                !parent.classList.contains('is-not-in-month') &&
+                                !parent.classList.contains('not-in-month') &&
+                                !parent.classList.contains('outside-month')
+                            ) {
                                 d.click();
                                 return 'text-match';
                             }
@@ -424,14 +493,14 @@ class PriceCompare:
                 pass
 
         await _navigate_to_month(checkin_dt)
-        await page.wait_for_timeout(300)
+        await page.wait_for_timeout(T["after_day_click"])
         await _click_day(checkin_dt)
         await page.wait_for_timeout(500)
 
         await _navigate_to_month(checkout_dt)
-        await page.wait_for_timeout(300)
+        await page.wait_for_timeout(T["after_day_click"])
         await _click_day(checkout_dt)
-        await page.wait_for_timeout(500)
+        await page.wait_for_timeout(T["after_day_click"])
 
         for confirm_sel in (
             'button[aria-label="Done"]', 'button:has-text("Done")',
@@ -447,7 +516,7 @@ class PriceCompare:
                 pass
 
         await page.locator('[data-testid="guests-button"]').click()
-        await page.wait_for_timeout(600)
+        await page.wait_for_timeout(T["after_guests_open"])
 
         async def _set_adults(room_idx: int, target: int):
             panel    = page.locator(f'[id="room-{room_idx + 1}"]')
@@ -508,10 +577,138 @@ class PriceCompare:
             total_expected = 9999
             print(f"[NUITEE] {self.city}: could not read result count", flush=True)
 
-        
-        # -- missing part get the cards from the results page and extract hotels from them
+        # ── Scroll & Harvest ───────────────────────────────────────────
+        print(f"[NUITEE] {self.city}: starting scroll harvest...", flush=True)
 
+        all_hotels: dict[str, float] = {}
+        last_count   = -1
+        stall_streak = 0
+        MAX_STALLS   = 6      # stop if count doesn't grow for 6 consecutive scrolls
+        SCROLL_STEP  = 400    # px per scroll increment
+
+        async def _harvest_visible_cards() -> None:
+            """Read every currently-rendered card and upsert into all_hotels."""
+            cards = await page.locator(
+                '[data-testid="hotel-card"], .p-hotelCard'
+            ).all()
+            for card in cards:
+                try:
+                    # ── Name ──────────────────────────────────────────
+                    name_el = card.locator(
+                        '.p-hotelCard__content__top__title h3'
+                    ).first
+                    name = (await name_el.inner_text()).strip()
+                    if not name:
+                        continue
+
+                    # ── Price ─────────────────────────────────────────
+                    price_el = card.locator(
+                        '.p-hotelCard__content__bottom__right__price__new'
+                    ).first
+                    raw_price = (await price_el.inner_text()).strip()
+
+                    # "MAD 1,558 / night"  →  1558.0
+                    cleaned = (
+                        raw_price
+                        .replace("MAD", "")
+                        .replace(",", "")
+                        .replace("/ night", "")
+                        .replace("/night", "")
+                        .strip()
+                    )
+                    price_match = re.search(r'[\d.]+', cleaned)
+                    price = float(price_match.group()) if price_match else 0.0
+
+                    # ── Rating (optional, store if present) ───────────
+                    rating: float | None = None
+                    try:
+                        rating_el = card.locator(
+                            '.p-hotelCard__content__top__score__number'
+                        ).first
+                        raw_rating = (await rating_el.inner_text()).strip()
+                        rating = float(raw_rating)
+                    except Exception:
+                        pass
+
+                    # ── Upsert: first-seen price wins; update if better ─
+                    if name not in all_hotels:
+                        all_hotels[name] = {
+                            "name":         name,
+                            "nuitee_price": price,
+                            "rating":       rating,
+                        }
+
+                except Exception:
+                    # Stale / recycled node — skip silently
+                    continue
+
+        # ── Main scroll loop ───────────────────────────────────────────
+        while True:
+            await _harvest_visible_cards()
+            unique_now = len(all_hotels)
+
+            print(
+                f"[NUITEE] {self.city}: "
+                f"{unique_now}/{total_expected} unique hotels collected",
+                flush=True,
+            )
+
+            # ── Break conditions ───────────────────────────────────────
+            if unique_now >= total_expected:
+                print(f"[NUITEE] {self.city}: target reached, stopping scroll.", flush=True)
+                break
+
+            if unique_now == last_count:
+                stall_streak += 1
+                if stall_streak >= MAX_STALLS:
+                    print(
+                        f"[NUITEE] {self.city}: "
+                        f"no new hotels after {MAX_STALLS} scrolls, stopping.",
+                        flush=True,
+                    )
+                    break
+            else:
+                stall_streak = 0  # progress was made — reset the stall counter
+
+            last_count = unique_now
+
+            # ── Scroll one step and wait for DOM to settle ─────────────
+            await page.evaluate(f"window.scrollBy(0, {SCROLL_STEP})")
+            await page.wait_for_timeout(T.get("scroll_settle", 600))
+
+            # ── Detect end-of-list sentinel (no more cards to load) ────
+            try:
+                eol = page.locator(
+                    '[data-testid="end-of-results"], '
+                    '.p-noResults, '
+                    '[class*="endOfList"], '
+                    '[class*="no-more-results"]'
+                ).first
+                if await eol.is_visible(timeout=200):
+                    print(f"[NUITEE] {self.city}: end-of-list sentinel detected.", flush=True)
+                    # One final harvest before breaking in case new cards just rendered
+                    await _harvest_visible_cards()
+                    break
+            except Exception:
+                pass
+
+        # ── Serialise to the expected return format ────────────────────
+        hotels: list[dict] = [
+            {
+                "name":         h["name"],
+                "nuitee_price": h["nuitee_price"],
+                **({"rating": h["rating"]} if h["rating"] is not None else {}),
+            }
+            for h in all_hotels.values()
+        ]
+
+        print(
+            f"[NUITEE] {self.city}: harvest complete — "
+            f"{len(hotels)} hotels returned.",
+            flush=True,
+        )
         return hotels
+
 
     # ------------------------------------------------------------------
     # Booking.com scraper
@@ -623,7 +820,7 @@ class PriceCompare:
     async def run(self):
         async with async_playwright() as p:
             browser = await p.chromium.launch(
-                headless=True,
+                headless=False,
                 slow_mo=0,
                 args=BROWSER_ARGS,
             )
@@ -659,7 +856,6 @@ class PriceCompare:
                 print(f"[NUITEE] No hotels found for {self.city}")
 
             await browser.close()
-
 
 # ---------------------------------------------------------------------------
 # Entry point
