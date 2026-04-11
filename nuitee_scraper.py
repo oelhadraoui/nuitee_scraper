@@ -6,7 +6,7 @@ import random
 import json
 from datetime import datetime
 from pathlib import Path
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, Route, Request
 
 try:
     from playwright_stealth import stealth_async
@@ -21,20 +21,20 @@ load_dotenv()
 
 
 # ---------------------------------------------------------------------------
-# Timeouts (ms) — tuned for Oracle Cloud server latency
+# Timeouts (ms)
 # ---------------------------------------------------------------------------
 T = {
     "page_load":          60_000,
     "network_idle":       60_000,
-    "url_change":         90_000,   # bumped: London/large cities take longer to redirect
-    "first_card":         45_000,   # bumped: large cities load slower
+    "url_change":         45_000,
+    "first_card":         45_000,
     "selector_wait":      45_000,
     "element_visible":     5_000,
     "price_selector":      5_000,
     "cookie_btn":          5_000,
     "confirm_btn":         2_000,
     "popup_dismiss":       3_000,
-    "suggestion_click":   10_000,   # bumped: autocomplete can be slow on cold load
+    "suggestion_click":   10_000,
     "load_more_btn":       3_000,
     "after_goto":          2_000,
     "after_destination":   1_500,
@@ -44,13 +44,12 @@ T = {
     "after_guests_apply":    800,
     "adult_btn_click":       150,
     "add_room":              800,
-    # Scroll: 2.5 s per iteration gives the IntersectionObserver time to fire + XHR to return
-    "scroll_settle":       2_500,
+    "scroll_settle":         800,   # shorter: we're driven by network events now
     "next_month_btn":        500,
 }
 
 # ---------------------------------------------------------------------------
-# Browser args (container-safe)
+# Browser args
 # ---------------------------------------------------------------------------
 BROWSER_ARGS = [
     "--disable-blink-features=AutomationControlled",
@@ -80,11 +79,8 @@ PRICE_SELECTORS = [
 ]
 
 SOLD_OUT_SIGNALS = [
-    "no availability",
-    "sold out",
-    "unavailable",
-    "we don't have any available",
-    "no rooms available",
+    "no availability", "sold out", "unavailable",
+    "we don't have any available", "no rooms available",
 ]
 
 POPUP_SELECTORS = ", ".join([
@@ -142,23 +138,54 @@ def _parse_price(text: str, aggressive: bool = False) -> float | None:
 
 
 # ---------------------------------------------------------------------------
+# Hotel data extractor — works on any JSON shape the API returns
+# ---------------------------------------------------------------------------
+
+def _extract_hotels_from_json(data) -> list[dict]:
+    """
+    Recursively walk a JSON structure and pull out objects that look like
+    hotel listings: must have a name-like key and a price-like key.
+    Returns list of {"name": str, "nuitee_price": float}.
+    """
+    results = []
+
+    NAME_KEYS  = {"name", "hotelName", "hotel_name", "title", "propertyName",
+                  "property_name", "displayName", "display_name"}
+    PRICE_KEYS = {"price", "rate", "totalPrice", "total_price", "lowestPrice",
+                  "lowest_price", "pricePerNight", "price_per_night",
+                  "basePrice", "base_price", "amount", "totalRate", "total_rate",
+                  "displayPrice", "display_price", "netPrice", "net_price"}
+
+    def _walk(obj):
+        if isinstance(obj, dict):
+            name  = None
+            price = None
+            for k, v in obj.items():
+                kl = k.lower()
+                if any(nk.lower() == kl for nk in NAME_KEYS) and isinstance(v, str) and len(v) > 2:
+                    name = v.strip()
+                if any(pk.lower() == kl for pk in PRICE_KEYS):
+                    try:
+                        price = float(str(v).replace(",", "").replace(" ", ""))
+                    except (ValueError, TypeError):
+                        pass
+            if name and price and price > 0:
+                results.append({"name": name, "nuitee_price": price})
+            for v in obj.values():
+                _walk(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                _walk(item)
+
+    _walk(data)
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Input normalisation
 # ---------------------------------------------------------------------------
 
 def _parse_rooms_config(params: dict) -> list[int]:
-    """
-    Accepted formats in input.json:
-      A) Simple (same adults in every room):
-         { "rooms": 2, "adults": 3 }
-         → [3, 3]
-
-      B) Per-room (explicit adults per room):
-         { "rooms_config": [3, 2] }
-         → [3, 2]   (room 1 has 3 adults, room 2 has 2 adults)
-
-      C) Old default (no rooms/adults key):
-         {}  → [2]
-    """
     if "rooms_config" in params:
         return [int(a) for a in params["rooms_config"]]
     adults = int(params.get("adults", 2))
@@ -173,10 +200,6 @@ def _parse_rooms_config(params: dict) -> list[int]:
 class PriceCompare:
     def __init__(self, city: str, checkin: str, checkout: str,
                  rooms_config: list[int] = None):
-        """
-        rooms_config: list of adults per room, e.g. [3, 2] means
-                      room 1 = 3 adults, room 2 = 2 adults.
-        """
         self.nuitee_url   = os.getenv("NUITEE_URL", "https://amine-sadik-2911w.nuitee.link/")
         self.city         = city
         self.checkin      = checkin
@@ -191,9 +214,35 @@ class PriceCompare:
     async def get_nuitee_data(self, browser) -> list[dict]:
         context = await browser.new_context(viewport={"width": 1280, "height": 800})
         page    = await context.new_page()
+
+        # ── Network interception ───────────────────────────────────────
+        # Collect every JSON API response that comes in while we scroll.
+        # We store raw parsed JSON blobs; after scrolling we extract hotels.
+        api_blobs: list = []
+        api_urls:  list = []
+
+        async def _capture_response(response):
+            """Called for every network response. Grab JSON from API calls."""
+            url = response.url
+            ct  = response.headers.get("content-type", "")
+            # Only look at JSON responses from the same origin or known API paths
+            if "json" not in ct:
+                return
+            # Skip tiny responses (e.g. analytics pings)
+            try:
+                body = await response.body()
+                if len(body) < 100:
+                    return
+                data = json.loads(body)
+                api_blobs.append(data)
+                api_urls.append(url)
+            except Exception:
+                pass
+
+        page.on("response", _capture_response)
+
         await page.goto(self.nuitee_url, wait_until="networkidle", timeout=T["network_idle"])
 
-        # Cookie banner
         try:
             await page.locator('[data-testid="accept-button"]').click(timeout=T["cookie_btn"])
         except Exception:
@@ -205,13 +254,9 @@ class PriceCompare:
         await search_input.type(self.city, delay=80)
         await page.wait_for_timeout(T["after_destination"])
 
-        # Wait for the dropdown list to appear, then pick the first <li> that
-        # matches the city name but is NOT an airport or region entry.
-        # We try up to 3 times in case the dropdown is slow to render.
         suggestion_clicked = False
         for attempt in range(3):
             try:
-                # Primary: target <li> elements specifically (avoids header/map divs)
                 dropdown_li = (
                     page.locator("ul li")
                     .filter(has_text=self.city)
@@ -226,13 +271,11 @@ class PriceCompare:
                 break
             except Exception:
                 if attempt < 2:
-                    # Clear and retype to re-trigger autocomplete
                     await search_input.triple_click()
                     await search_input.type(self.city, delay=80)
                     await page.wait_for_timeout(T["after_destination"])
 
         if not suggestion_clicked:
-            # Last-resort fallback: click whatever first suggestion appears
             try:
                 fallback = page.locator("ul li").first
                 await fallback.wait_for(state="visible", timeout=T["suggestion_click"])
@@ -347,8 +390,7 @@ class PriceCompare:
         async def _click_day(dt: datetime):
             iso = dt.strftime("%Y-%m-%d")
             try:
-                day_selector = f".vc-day.id-{iso} .vc-day-content"
-                cell = page.locator(day_selector).first
+                cell = page.locator(f".vc-day.id-{iso} .vc-day-content").first
                 if await cell.is_visible(timeout=2000):
                     await cell.click(force=True)
                     return
@@ -369,7 +411,8 @@ class PriceCompare:
                         const dayNum = targetIso.split('-')[2].replace(/^0/, '');
                         const allDays = document.querySelectorAll('.vc-day-content');
                         for (const d of allDays) {
-                            if (d.textContent.trim() === dayNum && !d.parentElement.classList.contains('is-not-in-month')) {
+                            if (d.textContent.trim() === dayNum &&
+                                !d.parentElement.classList.contains('is-not-in-month')) {
                                 d.click();
                                 return 'text-match';
                             }
@@ -391,10 +434,8 @@ class PriceCompare:
         await page.wait_for_timeout(500)
 
         for confirm_sel in (
-            'button[aria-label="Done"]',
-            'button:has-text("Done")',
-            'button:has-text("Apply")',
-            '[data-testid="date-apply"]',
+            'button[aria-label="Done"]', 'button:has-text("Done")',
+            'button:has-text("Apply")', '[data-testid="date-apply"]',
             '.p-datepicker-buttonbar button',
         ):
             try:
@@ -433,6 +474,13 @@ class PriceCompare:
         await page.locator('[data-testid="guests-apply"]').click()
         await page.wait_for_timeout(T["after_guests_apply"])
 
+        # edge case if gests is default 2 and one room: we need to click the sherch button to trigger the search
+        if self.rooms == 1 and self.rooms_config[0] == 2:
+            try:
+                await page.locator('button:has-text("Search")').first.click()
+            except Exception:
+                pass
+
         # ── Wait for results page ──────────────────────────────────────
         try:
             await page.wait_for_url(
@@ -440,107 +488,29 @@ class PriceCompare:
                 timeout=T["url_change"]
             )
         except Exception:
-            # URL didn't change but page may have still loaded cards (London case)
             pass
 
-        # Wait for at least 1 card — if this times out the city genuinely returned nothing
-        await page.wait_for_selector('[data-testid="hotel-search-result"], .p-hotelCard__content',
-                                     timeout=T["selector_wait"])
+        await page.wait_for_selector(
+            '[data-testid="hotel-search-result"], .p-hotelCard__content',
+            timeout=T["selector_wait"]
+        )
 
-        # ── FIX #1: Scroll the INNER container to trigger all lazy cards ──
-        #
-        # The Nuitee portal renders cards in a fixed-height scrollable div,
-        # NOT document.body. We must find that container and scroll it.
-        # We also use scroll_into_view on the last card to fire IntersectionObserver.
+        # ── Wait for result count banner ───────────────────────────────
+        print(f"[NUITEE] {self.city}: waiting for results to load...", flush=True)
+        try:
+            await page.wait_for_selector('[data-testid="hotel-search-result"]',
+                                         timeout=T["selector_wait"])
+            result_text = await page.locator('[data-testid="hotel-search-result"]').inner_text()
+            total_match = re.search(r'(\d[\d,]*)', result_text.replace(",", ""))
+            total_expected = int(total_match.group(1)) if total_match else 9999
+            print(f"[NUITEE] {self.city}: page reports {total_expected} properties", flush=True)
+        except Exception:
+            total_expected = 9999
+            print(f"[NUITEE] {self.city}: could not read result count", flush=True)
 
-        # Give the first batch of cards time to fully render before we start scrolling
-        await page.wait_for_timeout(2_000)
+        
+        # -- missing part get the cards from the results page and extract hotels from them
 
-        async def _load_all_cards(max_iter: int = 300) -> None:
-            """
-            Scroll the inner results container until card count stops growing.
-            Count is read BEFORE each scroll so we know the baseline and only
-            increment stale when a full scroll cycle produces nothing new.
-            300 iterations × 2.5 s = 12.5 min max (enough for 400+ hotels).
-            Stops early after 5 consecutive stale rounds.
-            """
-            # Seed prev from what is already in the DOM
-            prev  = await page.locator(".p-hotelCard__content").count()
-            stale = 0
-
-            for _ in range(max_iter):
-                # 1. Find & scroll the scrollable container
-                await page.evaluate("""
-                    () => {
-                        // Try known Nuitee result container selectors first
-                        const candidates = [
-                            document.querySelector('.p-results'),
-                            document.querySelector('.p-hotelList'),
-                            document.querySelector('[data-testid="hotel-list"]'),
-                            document.querySelector('[class*="resultList"]'),
-                            document.querySelector('[class*="hotelList"]'),
-                        ];
-                        for (const el of candidates) {
-                            if (el) { el.scrollTop = el.scrollHeight; return; }
-                        }
-                        // Fallback: walk up from the first card to find scrollable ancestor
-                        const card = document.querySelector('.p-hotelCard__content');
-                        if (!card) {
-                            window.scrollTo(0, document.body.scrollHeight);
-                            return;
-                        }
-                        let node = card.parentElement;
-                        while (node && node !== document.body) {
-                            const s = window.getComputedStyle(node);
-                            if (/auto|scroll/.test(s.overflow + s.overflowY)
-                                && node.scrollHeight > node.clientHeight) {
-                                node.scrollTop = node.scrollHeight;
-                                return;
-                            }
-                            node = node.parentElement;
-                        }
-                        window.scrollTo(0, document.body.scrollHeight);
-                    }
-                """)
-
-                # 2. Also bring the last card into viewport (fires IntersectionObserver)
-                try:
-                    await page.locator(".p-hotelCard__content").last.scroll_into_view_if_needed(timeout=2000)
-                except Exception:
-                    pass
-
-                await page.wait_for_timeout(T["scroll_settle"])
-
-                cur = await page.locator(".p-hotelCard__content").count()
-                if cur == prev:
-                    stale += 1
-                    if stale >= 5:
-                        break
-                else:
-                    stale = 0
-                    prev = cur
-
-        await _load_all_cards()
-
-        # ── Parse cards ────────────────────────────────────────────────
-        hotels = []
-        for card in await page.locator(".p-hotelCard__content").all():
-            try:
-                name = await card.locator(
-                    ".p-hotelCard__content__top__title h3"
-                ).inner_text()
-                price_raw = await card.locator(
-                    ".p-hotelCard__content__bottom__right__price__new"
-                ).inner_text()
-                price_val = float(
-                    re.sub(r"[^\d.]", "", price_raw.split("/")[0].replace(",", ""))
-                )
-                hotels.append({"name": name.strip(), "nuitee_price": price_val})
-            except Exception:
-                pass
-
-        print(f"[NUITEE] {self.city}: {len(hotels)} hotel(s) found")
-        await context.close()
         return hotels
 
     # ------------------------------------------------------------------
@@ -592,7 +562,6 @@ class PriceCompare:
             await page.wait_for_timeout(T["after_goto"])
 
             query = urllib.parse.quote(hotel_name)
-            # FIX #2: pass total_adults and rooms to Booking so pricing matches
             search_url = (
                 f"https://www.booking.com/searchresults.html"
                 f"?ss={query}"
@@ -654,7 +623,7 @@ class PriceCompare:
     async def run(self):
         async with async_playwright() as p:
             browser = await p.chromium.launch(
-                headless=False,
+                headless=True,
                 slow_mo=0,
                 args=BROWSER_ARGS,
             )
@@ -678,7 +647,7 @@ class PriceCompare:
                     self.city,
                     self.checkin,
                     self.checkout,
-                    str(self.rooms_config),   # e.g. "[3, 2]"
+                    str(self.rooms_config),
                     self.rooms,
                     f"{hotel['nuitee_price']:.2f}",
                     b_display,
