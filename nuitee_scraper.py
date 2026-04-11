@@ -578,105 +578,144 @@ class PriceCompare:
             print(f"[NUITEE] {self.city}: could not read result count", flush=True)
 
         # ── Scroll & Harvest ───────────────────────────────────────────
-        print(f"[NUITEE] {self.city}: starting scroll harvest...", flush=True)
+        print(f"[NUITEE] {self.city}: starting optimised scroll harvest…", flush=True)
 
-        all_hotels: dict[str, float] = {}
-        last_count   = -1
-        stall_streak = 0
-        MAX_STALLS   = 6      # stop if count doesn't grow for 6 consecutive scrolls
-        SCROLL_STEP  = 400    # px per scroll increment
+        all_hotels : dict[str, dict]  = {}   # name → record  (O(1) upsert)
+        seen_names : set[str]         = set() # O(1) membership test
 
-        async def _harvest_visible_cards() -> None:
-            """Read every currently-rendered card and upsert into all_hotels."""
-            cards = await page.locator(
-                '[data-testid="hotel-card"], .p-hotelCard'
-            ).all()
-            for card in cards:
+        # Scroll dynamics
+        SCROLL_MIN      = 400    # px — normal step
+        SCROLL_MAX      = 1800   # px — leapfrog step
+        SCROLL_BOOST    = 200    # px added each stall iteration
+        scroll_step     = SCROLL_MIN
+
+        # Stall / exit guards
+        MAX_STALLS      = 6
+        stall_streak    = 0
+        last_count      = 0
+
+        # How many tail-cards to re-inspect each iteration.
+        # Only the bottom of the DOM has new nodes; no need to re-read the top.
+        TAIL_WINDOW     = 20
+
+        async def _harvest_tail() -> int:
+            """
+            Inspect only the last TAIL_WINDOW cards in the DOM.
+            Returns the number of *new* hotels added this pass.
+            """
+            added = 0
+            locator  = page.locator('[data-testid="hotel-card"], .p-hotelCard')
+            total_rendered = await locator.count()
+
+            # Clamp window to actual count so we never go negative
+            start = max(0, total_rendered - TAIL_WINDOW)
+
+            for idx in range(start, total_rendered):
+                card = locator.nth(idx)
                 try:
                     # ── Name ──────────────────────────────────────────
                     name_el = card.locator(
                         '.p-hotelCard__content__top__title h3'
                     ).first
                     name = (await name_el.inner_text()).strip()
-                    if not name:
-                        continue
+                    if not name or name in seen_names:
+                        continue                          # O(1) check
 
                     # ── Price ─────────────────────────────────────────
                     price_el = card.locator(
                         '.p-hotelCard__content__bottom__right__price__new'
                     ).first
-                    raw_price = (await price_el.inner_text()).strip()
-
-                    # "MAD 1,558 / night"  →  1558.0
+                    raw = (await price_el.inner_text()).strip()
                     cleaned = (
-                        raw_price
+                        raw
                         .replace("MAD", "")
-                        .replace(",", "")
+                        .replace(",",   "")
                         .replace("/ night", "")
-                        .replace("/night", "")
+                        .replace("/night",  "")
                         .strip()
                     )
-                    price_match = re.search(r'[\d.]+', cleaned)
-                    price = float(price_match.group()) if price_match else 0.0
+                    m = re.search(r'[\d.]+', cleaned)
+                    price = float(m.group()) if m else 0.0
 
-                    # ── Rating (optional, store if present) ───────────
+                    # ── Rating ────────────────────────────────────────
                     rating: float | None = None
                     try:
-                        rating_el = card.locator(
+                        r_el   = card.locator(
                             '.p-hotelCard__content__top__score__number'
                         ).first
-                        raw_rating = (await rating_el.inner_text()).strip()
-                        rating = float(raw_rating)
+                        rating = float((await r_el.inner_text()).strip())
                     except Exception:
                         pass
 
-                    # ── Upsert: first-seen price wins; update if better ─
-                    if name not in all_hotels:
-                        all_hotels[name] = {
-                            "name":         name,
-                            "nuitee_price": price,
-                            "rating":       rating,
-                        }
+                    # ── Commit ────────────────────────────────────────
+                    seen_names.add(name)
+                    all_hotels[name] = {
+                        "name":         name,
+                        "nuitee_price": price,
+                        "rating":       rating,
+                    }
+                    added += 1
 
                 except Exception:
-                    # Stale / recycled node — skip silently
-                    continue
+                    continue   # stale / recycled node — skip silently
 
-        # ── Main scroll loop ───────────────────────────────────────────
+            return added
+
+        # ── Main leapfrog loop ─────────────────────────────────────────
         while True:
-            await _harvest_visible_cards()
-            unique_now = len(all_hotels)
+            # ── Prioritise api_blobs if data has already arrived ───────
+            if api_blobs:                                 # opt-4: skip sleep if ready
+                for blob in api_blobs:
+                    try:
+                        b_name  = blob.get("name", "").strip()
+                        b_price = float(blob.get("price", 0))
+                        if b_name and b_name not in seen_names:
+                            seen_names.add(b_name)
+                            all_hotels[b_name] = {
+                                "name":         b_name,
+                                "nuitee_price": b_price,
+                                "rating":       blob.get("rating"),
+                            }
+                    except Exception:
+                        pass
+                api_blobs.clear()                         # opt-5: free memory immediately
+
+            # ── DOM tail harvest ──────────────────────────────────────
+            new_this_pass = await _harvest_tail()
+            unique_now    = len(all_hotels)
 
             print(
                 f"[NUITEE] {self.city}: "
-                f"{unique_now}/{total_expected} unique hotels collected",
+                f"{unique_now}/{total_expected} unique "
+                f"(+{new_this_pass} this pass | scroll={scroll_step}px)",
                 flush=True,
             )
 
-            # ── Break conditions ───────────────────────────────────────
+            # ── Exit: target reached ───────────────────────────────────
             if unique_now >= total_expected:
-                print(f"[NUITEE] {self.city}: target reached, stopping scroll.", flush=True)
+                print(f"[NUITEE] {self.city}: target reached.", flush=True)
                 break
 
-            if unique_now == last_count:
+            # ── Stall logic + variable scroll step ────────────────────
+            if new_this_pass == 0:
                 stall_streak += 1
+                # Leapfrog: grow the scroll jump each consecutive stall
+                scroll_step = min(scroll_step + SCROLL_BOOST, SCROLL_MAX)  # opt-3
+
                 if stall_streak >= MAX_STALLS:
                     print(
                         f"[NUITEE] {self.city}: "
-                        f"no new hotels after {MAX_STALLS} scrolls, stopping.",
+                        f"{MAX_STALLS} stalls — harvest complete.",
                         flush=True,
                     )
                     break
             else:
-                stall_streak = 0  # progress was made — reset the stall counter
+                stall_streak = 0
+                scroll_step  = SCROLL_MIN    # reset to fine-grain on progress
 
             last_count = unique_now
 
-            # ── Scroll one step and wait for DOM to settle ─────────────
-            await page.evaluate(f"window.scrollBy(0, {SCROLL_STEP})")
-            await page.wait_for_timeout(T.get("scroll_settle", 600))
-
-            # ── Detect end-of-list sentinel (no more cards to load) ────
+            # ── End-of-list sentinel (cheap check, no sleep) ──────────
             try:
                 eol = page.locator(
                     '[data-testid="end-of-results"], '
@@ -684,15 +723,21 @@ class PriceCompare:
                     '[class*="endOfList"], '
                     '[class*="no-more-results"]'
                 ).first
-                if await eol.is_visible(timeout=200):
-                    print(f"[NUITEE] {self.city}: end-of-list sentinel detected.", flush=True)
-                    # One final harvest before breaking in case new cards just rendered
-                    await _harvest_visible_cards()
+                if await eol.is_visible(timeout=150):
+                    print(f"[NUITEE] {self.city}: end-of-list sentinel.", flush=True)
+                    await _harvest_tail()    # final sweep
                     break
             except Exception:
                 pass
 
-        # ── Serialise to the expected return format ────────────────────
+            # ── Scroll ────────────────────────────────────────────────
+            await page.evaluate(f"window.scrollBy(0, {scroll_step})")
+
+            # opt-4: only sleep if api_blobs is empty (no data arrived yet)
+            if not api_blobs:
+                await page.wait_for_timeout(T.get("scroll_settle", 500))
+
+        # ── Serialise ─────────────────────────────────────────────────
         hotels: list[dict] = [
             {
                 "name":         h["name"],
@@ -703,12 +748,10 @@ class PriceCompare:
         ]
 
         print(
-            f"[NUITEE] {self.city}: harvest complete — "
-            f"{len(hotels)} hotels returned.",
+            f"[NUITEE] {self.city}: harvest done — {len(hotels)} hotels.",
             flush=True,
         )
         return hotels
-
 
     # ------------------------------------------------------------------
     # Booking.com scraper

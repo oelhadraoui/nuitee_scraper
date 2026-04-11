@@ -1,8 +1,8 @@
 [
   {
-    "city": "Casablanca",
+    "city": "Madrid",
     "checkin": "2026-09-1",
     "checkout": "2026-09-14",
-    "rooms_config": [2, 2]
+    "adults": 2
   }
 ]
