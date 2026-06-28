@@ -1,256 +1,266 @@
-# 🏨 Hotel Price Scraper
+# Hotel Price Scraper (Nuitee vs Booking.com)
 
-A production-grade, headless-browser scraper that compares hotel prices between
-**Nuitee** and **Booking.com** across dozens of cities simultaneously. Built with
-Python + Playwright, containerised with Docker, and optimised for Oracle Cloud
-Free Tier (Ampere A1 ARM64).
+This repository compares hotel prices between Nuitee and Booking.com for a list of cities and dates.
+It is built for reliable batch scraping with Playwright, supports Docker and local runs, and writes a single CSV output that is easy to review or process downstream.
 
----
+## What This Script Does
 
-## Table of Contents
+For each search item in input.json, the scraper does the following:
 
-1. [What it does](#what-it-does)
-2. [Architecture](#architecture)
-3. [Project structure](#project-structure)
-4. [Quick start — Local](#quick-start--local)
-5. [Quick start — Docker](#quick-start--docker)
-6. [Input format](#input-format)
-7. [Environment variables](#environment-variables)
-8. [Output format](#output-format)
-9. [Makefile reference](#makefile-reference)
-10. [Troubleshooting](#troubleshooting)
+1. Opens Nuitee and searches by city, dates, and room/adult configuration.
+2. Collects all available hotels from Nuitee with their MAD prices.
+3. For every hotel found on Nuitee, opens Booking.com with an enriched query: Hotel Name + City.
+4. Applies fuzzy name matching to avoid wrong hotel cards.
+5. Extracts the Booking price when the match is valid.
+6. Saves one row per hotel into output/prices.csv.
 
----
+The output is useful for:
 
-## What it does
+- price gap analysis between Nuitee and Booking
+- identifying missing/failed matches
+- building QA pipelines for inventory and parity checks
 
-For each city in `input.json` the scraper:
+## How It Works (Flow)
 
-1. Opens **Nuitee.com** in an isolated browser context, logs in, and searches
-   for hotels on the requested dates.
-2. Harvests every hotel name and nightly price from the results page —
-   even when the list contains 300+ entries rendered via a virtualised DOM.
-3. Opens **Booking.com** in a second isolated context and performs the same
-   search.
-4. Merges the two datasets on hotel name and writes a CSV with columns:
-   `city, hotel_name, nuitee_price, booking_price, diff, diff_pct`.
-
----
-
-## Architecture
-
-### Dual-source price collection
-
-```
-input.json
-    │
-    ├─▶ NuiteeScraper ──▶ API interception (primary)
-    │                 └─▶ DOM Scroll & Harvest (fallback)
-    │
-    └─▶ BookingScraper ─▶ DOM Scroll & Harvest
-    │
-    └─▶ Merger ──▶ output/results_YYYY-MM-DD.csv
+```mermaid
+flowchart TD
+      A[input.json] --> B[Read search params per city]
+      B --> C[Scrape Nuitee results]
+      C --> D{Hotels found?}
+      D -- No --> E[Log and continue next city]
+      D -- Yes --> F[For each Nuitee hotel]
+      F --> G[Query Booking with Hotel Name + City]
+      G --> H[Fuzzy match Booking card name]
+      H --> I{Score >= threshold?}
+      I -- Yes --> J[Extract Booking price]
+      I -- No --> K[Mark MATCH_FAIL or NO_RESULTS]
+      J --> L[Compute price difference]
+      K --> L
+      L --> M[Append row to output/prices.csv]
+      M --> N{More hotels/cities?}
+      N -- Yes --> F
+      N -- No --> O[Done]
 ```
 
-### API Interception (Nuitee primary path)
+## Runtime Steps In Detail
 
-The scraper registers a Playwright `route` handler that intercepts XHR/fetch
-responses matching `/api/hotels` or `/v2/search`. When the browser fires the
-hotel-list request, the handler parses the JSON payload directly — no DOM
-interaction required. This path is instantaneous and returns 100 % of results
-in a single pass.
+### 1. Input Loading
 
-### Scroll & Harvest (DOM fallback)
+- The script reads input.json from the repository root.
+- It loops city-by-city.
+- Each city can define either:
+   - adults and rooms, or
+   - rooms_config (example: [2,1,3] means 3 rooms with 2/1/3 adults).
 
-Used when the API path returns no data (auth token rotation, CDN changes, etc.).
+### 2. Nuitee Collection
 
-**The challenge:** Nuitee uses a *virtualised list* (PrimeVue `VirtualScroller`).
-Only ~12–15 cards exist in the DOM at any moment; as you scroll, nodes are
-recycled. A naïve `locator.all()` therefore never sees more than one screen-full
-of data.
+- Opens Nuitee in an isolated browser context.
+- Sets destination, check-in/check-out, and guest distribution.
+- Waits for hotel results.
+- Uses a scrolling harvest strategy for virtualized result lists.
+- Keeps unique hotel names only.
 
-**The solution — leapfrog harvesting:**
+### 3. Booking Validation + Price Extraction
 
-```
-while unique_count < total_expected:
-    1. Read the last 20 DOM nodes  (tail-window, O(1) per pass)
-    2. For each unseen card → extract name + price → add to seen_names set
-    3. If new cards were found → scroll SCROLL_MIN (400 px) — stay precise
-    4. If no new cards        → increase scroll step by 200 px (up to 1800 px)
-    5. If 6 consecutive empty passes → list exhausted → break
-```
+- Runs hotel lookups with bounded concurrency.
+- Builds Booking search URL with dates, room count, adults, and MAD currency.
+- Dismisses popups/modals automatically.
+- Forces Booking internal search resolution.
+- Picks the best card among top results with fuzzy matching.
+- Returns status:
+   - OK: valid name match and price extracted
+   - NO_RESULTS: hotel/page available but price not extractable or no availability
+   - MATCH_FAIL: best visible card does not match threshold
+   - ERROR: runtime exception
 
-Key complexity properties:
+### 4. CSV Output
 
-| Operation | Naïve approach | Optimised approach |
-|---|---|---|
-| Cards inspected per pass | All N cards | Last 20 cards (constant) |
-| Duplicate check | O(N) list scan | O(1) set lookup |
-| Overall complexity | O(N²) | O(N) |
+- Appends rows incrementally into output/prices.csv.
+- Includes hotel identity, trip info, both prices, difference, match status, and final Booking URL.
 
-### Browser context isolation
+## Project Structure
 
-Each city runs in its own `browser.new_context()`. Contexts share the same
-browser process (saving ~200 MB RAM vs one process per city) but have
-completely separate cookies, storage, and network state. This prevents session
-bleed between concurrent city runs.
-
----
-
-## Project structure
-
-```
+```text
 .
 ├── src/
-│   ├── main.py              # Entry point — reads input.json, fans out tasks
-│   ├── nuitee_scraper.py    # Nuitee login + harvest logic
-│   ├── booking_scraper.py   # Booking.com harvest logic
-│   ├── merger.py            # Joins the two datasets, writes CSV
-│   └── config.py            # Timeouts, selectors, constants
-├── output/                  # CSV results + per-run logs (git-ignored)
-├── input.json               # City search list (see Input format below)
-├── .env                     # Secrets — never commit this
-├── .env.example             # Template to copy
+│   ├── main.py                # Main scraper and CSV writer
+│   └── verify_and_correct.py  # Post-run verifier/fixer for weak rows
+├── input.json                 # Batch input (cities + dates)
+├── output/                    # Generated CSV files
+├── requirements.txt
 ├── Dockerfile
 ├── docker-compose.yml
 ├── Makefile
-├── requirements.txt
-└── README.md
+└── Readme.md
 ```
 
----
+## Quick Start
 
-## Quick start — Local
+### Option A: Run with Docker (recommended)
 
-### Prerequisites
-
-- Python 3.11+
-- Node.js is **not** required — Playwright's Python package bundles everything.
-
-```bash
-# 1. Clone
-git clone https://github.com/oelhadraoui/nuitee_scraper.git
-cd hotel-price-scraper
-
-# 2. Virtual environment
-python -m venv .venv
-source .venv/bin/activate
-
-# 3. Python dependencies
-pip install -r requirements.txt
-
-# 4. Playwright browser + system libraries
-playwright install-deps chromium
-playwright install chromium
-
-# 5. Configuration
-nano .env 
-
-# 6. Run
-python src/main.py --input input.json
-```
-
-Results are written to `output/results_YYYY-MM-DD.csv`.
-
----
-
-## Quick start — Docker
-
-### Prerequisites
-
-- Docker 24+ with the Compose plugin (`docker compose version`)
-- `make` (pre-installed on macOS/Linux; Windows users: use Git Bash or WSL)
+1. Create .env in the project root.
+2. Add at least NUITEE_URL.
+3. Build and run:
 
 ```bash
-# 1. Configure
-cp .env.example .env
-$EDITOR .env
-
-# 2. Build the image
 make build
-
-# 3. Run
-make start
-# or
 make run
-
-# 4. View results
-ls output/
 ```
 
----
+Or keep it running in background:
 
-## Input format
+```bash
+make start
+```
 
-`input.json` is an array of search jobs. Each object represents one city search:
+Output file:
 
-```jsonc
+- output/prices.csv
+
+### Option B: Run locally
+
+Requirements:
+
+- Python 3.10+
+- Linux packages required by Playwright
+
+Steps:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+playwright install chromium
+python3 src/main.py
+```
+
+## Input Format
+
+input.json is an array. Each object is one city search job.
+
+```json
 [
-  {
-    "city":     "Madrid",       // Free-text city name
-    "checkin":  "2026-09-01",   // ISO-8601 date (YYYY-MM-DD)
-    "checkout": "2026-09-02",   // Must be after checkin
-    "adults":   2               // Number of adult guests (integer ≥ 1)
-  },
-  {
-    "city":     "London",
-    "checkin":  "2026-09-01",
-    "checkout": "2026-09-02",
-    "adults":   2
-  }
+   {
+      "city": "Paris",
+      "checkin": "2026-08-01",
+      "checkout": "2026-08-02",
+      "adults": 2
+   },
+   {
+      "city": "Madrid",
+      "checkin": "2026-08-01",
+      "checkout": "2026-08-02",
+      "rooms_config": [2, 1]
+   }
 ]
 ```
 
-**Constraints:**
+Field notes:
 
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `city` | string | ✅ | Matched against the site's autocomplete |
-| `checkin` | string | ✅ | `YYYY-MM-DD` |
-| `checkout` | string | ✅ | `YYYY-MM-DD`, must be > `checkin` |
-| `adults` | integer | ✅ | 1–9 |
+- city: destination text
+- checkin / checkout: YYYY-MM-DD
+- adults: used when rooms_config is not provided
+- rooms: optional; defaults to 1 when rooms_config is not provided
+- rooms_config: optional explicit room distribution; overrides adults/rooms logic
 
----
+## Environment Variables
 
-## Environment variables
+Create a .env file in repo root.
 
-this is how `.env` should looks like:
+Required:
 
 ```dotenv
-# ── Nuitee link ─────────────────────────────────────────────────
-NUITEE_URL="https://amine-sadik-2911w.nuitee.link/"
+NUITEE_URL="https://your-nuitee-instance.link/"
 ```
 
----
+Common optional tuning:
 
-## Output format
+```dotenv
+FUZZY_THRESHOLD=85
+BOOKING_CONCURRENCY=4
+MAX_SCROLL_PASSES=180
+MAX_SCROLL_SECONDS=120
 
-`output/results_YYYY-MM-DD.csv`:
-
+# used by verify_and_correct.py
+VERIFY_CONCURRENCY=5
+CHECKPOINT_EVERY=50
 ```
-city,hotel_name,nuitee_price,booking_price,diff,diff_pct
-Madrid,Hotel Gran Via,558.0,612.0,-54.0,-8.82
-Madrid,Ibis Madrid Centro,210.0,198.0,12.0,6.06
-London,The Savoy,950.0,,, 
+
+## Output Schema
+
+Main output file: output/prices.csv
+
+Columns:
+
+1. Hotel Name
+2. City
+3. Check-in
+4. Check-out
+5. Adults per Room
+6. Rooms
+7. Nuitee Price (MAD)
+8. Booking Price (MAD)
+9. Price Difference (MAD)
+10. match_status
+11. Booking URL
+
+Difference formula currently used in main.py:
+
+- Price Difference (MAD) = Booking Price - Nuitee Price
+
+## Verification Script (Recommended After Main Run)
+
+verify_and_correct.py is a second pass tool for quality control.
+
+It re-checks rows that are likely bad (missing price, MATCH_FAIL, NO_RESULTS, ERROR, unverified rows), retries extraction, and writes a corrected output CSV.
+
+Example:
+
+```bash
+python3 src/verify_and_correct.py \
+   --input output/prices.csv \
+   --output output/prices_verified.csv \
+   --concurrency 5
 ```
 
-- `diff` = `nuitee_price − booking_price` (negative → Nuitee is cheaper)
-- `diff_pct` = `diff / booking_price × 100`
-- Empty `booking_price` means the hotel was not found on Booking.com
+Useful flags:
 
----
+- --force-all: re-verify every row
+- --fuzzy-threshold: override matching threshold
 
-## Makefile reference
+## Makefile Commands
 
-| Command | Description |
-|---|---|
-| `make build` | Build (or rebuild) the Docker image |
-| `make start` | Run scraper in background, tail logs |
-| `make run` | Run in foreground — exits when done |
-| `make stop` | Stop the container (preserves output) |
-| `make logs` | Tail last 200 lines + live stream |
-| `make shell` | Open bash inside the container |
-| `make clean` | Stop + remove containers + clear `output/` |
-| `make nuke` | `clean` + remove image layers |
+- make build: build docker image
+- make run: run foreground container once
+- make start: run detached and tail logs
+- make stop: stop container
+- make logs: stream scraper logs
+- make shell: open interactive bash in container
+- make clean: remove containers and clear output files
+- make nuke: clean + remove local image layers
 
----
+## Troubleshooting
+
+- Empty or low results on Nuitee:
+   - confirm NUITEE_URL is reachable from container/host
+   - reduce concurrency and retry
+- Many MATCH_FAIL statuses:
+   - lower FUZZY_THRESHOLD slightly (example: 80)
+   - run verify_and_correct.py to improve final quality
+- Playwright issues in local mode:
+   - run playwright install chromium
+   - if system deps are missing, prefer Docker mode
+- Input errors:
+   - validate date format and city spelling in input.json
+
+## Notes For Developers
+
+- The main scraper currently reads input.json from project root directly.
+- docker-compose passes --input input.json, but main.py does not parse CLI args yet.
+- CSV rows are appended during runtime, so partial progress is preserved if a city fails.
+
+If you plan to extend this repo, good next refactors are:
+
+- add argparse support to main.py
+- split main.py into smaller modules (Nuitee, Booking, writer)
+- add schema validation for input.json before scraping starts
