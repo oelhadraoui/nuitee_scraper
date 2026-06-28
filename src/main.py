@@ -38,6 +38,7 @@ import json
 import os
 import random
 import re
+import time
 import urllib.parse
 from datetime import datetime
 from pathlib import Path
@@ -101,6 +102,10 @@ T = {
     "post_search":          8_000,
     "card_name":            3_000,
 }
+
+BOOKING_CONCURRENCY = max(1, int(os.getenv("BOOKING_CONCURRENCY", "4")))
+MAX_SCROLL_PASSES = max(30, int(os.getenv("MAX_SCROLL_PASSES", "180")))
+MAX_SCROLL_SECONDS = max(30, int(os.getenv("MAX_SCROLL_SECONDS", "120")))
 
 BROWSER_ARGS = [
     "--disable-blink-features=AutomationControlled",
@@ -297,7 +302,7 @@ async def _get_first_card_name(page: Page) -> str | None:
         try:
             el = first_card.locator(sel).first
             if await el.is_visible(timeout=T["card_name"]):
-                name = (await el.inner_text()).strip()
+                name = _normalise_text((await el.inner_text()).strip())
                 if name:
                     return name
         except Exception:
@@ -305,7 +310,7 @@ async def _get_first_card_name(page: Page) -> str | None:
 
     try:
         h3 = first_card.locator("h3").first
-        name = (await h3.inner_text()).strip()
+        name = _normalise_text((await h3.inner_text()).strip())
         if name:
             return name
     except Exception:
@@ -324,9 +329,15 @@ async def _extract_price_from_first_card(page: Page) -> float | None:
 
     first_card = card_loc.first
 
+    return await _extract_price_from_card(first_card)
+
+
+async def _extract_price_from_card(card) -> float | None:
+    """Extract price from a specific result card."""
+
     for sel in PRICE_SELECTORS:
         try:
-            el = first_card.locator(sel).first
+            el = card.locator(sel).first
             if await el.is_visible(timeout=T["price_selector"]):
                 raw = await el.inner_text()
                 price = _parse_price(raw)
@@ -336,7 +347,7 @@ async def _extract_price_from_first_card(page: Page) -> float | None:
             continue
 
     try:
-        card_text = await first_card.inner_text()
+        card_text = await card.inner_text()
         return _parse_price(card_text)
     except Exception:
         return None
@@ -345,6 +356,68 @@ async def _extract_price_from_first_card(page: Page) -> float | None:
 # ─────────────────────────────────────────────────────────────────────────────
 # INPUT NORMALISATION
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _normalise_text(value: str) -> str:
+    """Replace commas with spaces and collapse repeated whitespace."""
+    return re.sub(r"\s+", " ", value.replace(",", " ")).strip()
+
+
+async def _best_booking_card(page: Page, expected_name: str) -> tuple[int | None, str | None, float]:
+    """Pick the best fuzzy hotel-name match among top visible Booking cards."""
+    cards = page.locator('[data-testid="property-card"]')
+    try:
+        await cards.first.wait_for(state="visible", timeout=T["first_card"])
+    except Exception:
+        return None, None, 0.0
+
+    try:
+        count = await cards.count()
+    except Exception:
+        return None, None, 0.0
+
+    best_idx: int | None = None
+    best_name: str | None = None
+    best_score = 0.0
+
+    for idx in range(min(count, 10)):
+        card = cards.nth(idx)
+        card_name: str | None = None
+        for sel in CARD_NAME_SELECTORS:
+            try:
+                el = card.locator(sel).first
+                if await el.is_visible(timeout=700):
+                    txt = _normalise_text((await el.inner_text()).strip())
+                    if txt:
+                        card_name = txt
+                        break
+            except Exception:
+                continue
+
+        if not card_name:
+            continue
+
+        score = _fuzzy_score(expected_name, card_name)
+        if score > best_score:
+            best_score = score
+            best_idx = idx
+            best_name = card_name
+
+    return best_idx, best_name, best_score
+
+
+async def _booking_no_availability(page: Page) -> bool:
+    """Conservative no-availability detection."""
+    try:
+        body = (await page.locator("body").inner_text()).lower()
+    except Exception:
+        return False
+    strict = [
+        "no rooms available",
+        "for your dates",
+        "is sold out on our site",
+        "no availability for",
+    ]
+    return any(s in body for s in strict)
 
 def _parse_rooms_config(params: dict) -> list[int]:
     if "rooms_config" in params:
@@ -373,6 +446,7 @@ class PriceCompare:
         self.rooms_config = rooms_config or [2]
         self.rooms        = len(self.rooms_config)
         self.total_adults = sum(self.rooms_config)
+        self.booking_concurrency = BOOKING_CONCURRENCY
 
     # ──────────────────────────────────────────────────────────────────────────
     # Nuitee scraper  (unchanged harvest logic, kept intact)
@@ -732,9 +806,11 @@ class PriceCompare:
         SCROLL_MAX   = 1800
         SCROLL_BOOST = 200
         scroll_step  = SCROLL_MIN
-        MAX_STALLS   = 6
+        MAX_STALLS   = 4
         stall_streak = 0
-        TAIL_WINDOW  = 20
+        TAIL_WINDOW  = 30
+        scroll_started = time.monotonic()
+        pass_count = 0
 
         async def _harvest_tail() -> int:
             added   = 0
@@ -747,7 +823,7 @@ class PriceCompare:
                     name_el = card.locator(
                         '.p-hotelCard__content__top__title h3'
                     ).first
-                    name = (await name_el.inner_text()).strip()
+                    name = _normalise_text((await name_el.inner_text()).strip())
                     if not name or name in seen_names:
                         continue
                     price_el = card.locator(
@@ -789,7 +865,7 @@ class PriceCompare:
             if api_blobs:
                 for blob in api_blobs:
                     try:
-                        b_name  = blob.get("name", "").strip()
+                        b_name  = _normalise_text(str(blob.get("name", "")))
                         b_price = float(blob.get("price", 0))
                         if b_name and b_name not in seen_names:
                             seen_names.add(b_name)
@@ -811,6 +887,20 @@ class PriceCompare:
             )
 
             if unique_now >= total_expected:
+                break
+
+            pass_count += 1
+            if pass_count >= MAX_SCROLL_PASSES:
+                print(
+                    f"[NUITEE] {self.city}: pass limit reached ({MAX_SCROLL_PASSES}).",
+                    flush=True,
+                )
+                break
+            if (time.monotonic() - scroll_started) >= MAX_SCROLL_SECONDS:
+                print(
+                    f"[NUITEE] {self.city}: time limit reached ({MAX_SCROLL_SECONDS}s).",
+                    flush=True,
+                )
                 break
 
             if new_this_pass == 0:
@@ -876,6 +966,8 @@ class PriceCompare:
              • Still no match → MATCH_FAIL
           5. Capture post-search page.url as the direct URL
         """
+        expected_name = _normalise_text(hotel_name)
+
         context: BrowserContext = await browser.new_context(
             viewport={"width": 1280, "height": 800},
             user_agent=random.choice(USER_AGENTS),
@@ -923,7 +1015,7 @@ class PriceCompare:
 
         try:
             # ── Step 1: build enriched query (Hotel Name + City) ──────────────
-            enriched_query = f"{hotel_name} {self.city}"
+            enriched_query = f"{expected_name} {self.city}"
             query_enc      = urllib.parse.quote(enriched_query)
             search_url     = (
                 f"https://www.booking.com/searchresults.html"
@@ -934,8 +1026,6 @@ class PriceCompare:
                 f"&lang=en-us"
                 f"&group_adults={self.total_adults}"
                 f"&no_rooms={self.rooms}"
-                f"&dest_type=hotel"
-                f"&nflt=ht_id%3D204"
             )
 
             # ── Step 2: navigate ──────────────────────────────────────────────
@@ -948,61 +1038,43 @@ class PriceCompare:
             await _dismiss_modals(page)
             await page.wait_for_timeout(400)
 
-            # ── Step 4: initial fuzzy check ───────────────────────────────────
-            first_name = await _get_first_card_name(page)
-            score      = _fuzzy_score(hotel_name, first_name or "")
+            # Always trigger Booking's internal search resolution before scraping.
+            await _force_search(page)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=T["post_search"])
+            except Exception:
+                await page.wait_for_timeout(T["after_search_click"])
 
-            if score >= FUZZY_THRESHOLD:
-                # Direct hit
-                price      = await _extract_price_from_first_card(page)
-                direct_url = page.url
+            await _dismiss_modals(page)
+            direct_url = page.url
+
+            best_idx, best_name, best_score = await _best_booking_card(page, expected_name)
+
+            if best_idx is not None and best_score >= FUZZY_THRESHOLD:
+                card = page.locator('[data-testid="property-card"]').nth(best_idx)
+                price = await _extract_price_from_card(card)
                 match_status = "OK" if price else "NO_RESULTS"
                 print(
-                    f"[BOOKING] {hotel_name[:45]} → initial match "
-                    f"(score={score:.0f}) → price={price}",
+                    f"[BOOKING] {expected_name[:45]} → best='{best_name or 'N/A'}' "
+                    f"score={best_score:.0f} price={price}",
+                    flush=True,
+                )
+            elif await _booking_no_availability(page):
+                match_status = "NO_RESULTS"
+                print(
+                    f"[BOOKING] {expected_name[:45]} → NO_RESULTS (availability)",
                     flush=True,
                 )
             else:
-                # No match → click Search button to refresh results
+                match_status = "MATCH_FAIL"
                 print(
-                    f"[BOOKING] {hotel_name[:45]} — card '{first_name or 'N/A'}' "
-                    f"(score={score:.0f}) < threshold → clicking Search",
+                    f"[BOOKING] {expected_name[:45]} → MATCH_FAIL "
+                    f"(best='{best_name or 'N/A'}' score={best_score:.0f})",
                     flush=True,
                 )
-                await _force_search(page)
-
-                try:
-                    await page.wait_for_load_state(
-                        "networkidle", timeout=T["post_search"]
-                    )
-                except Exception:
-                    await page.wait_for_timeout(T["after_search_click"])
-
-                direct_url = page.url   # capture post-search URL
-
-                # Secondary fuzzy check
-                second_name = await _get_first_card_name(page)
-                score2      = _fuzzy_score(hotel_name, second_name or "")
-
-                if score2 >= FUZZY_THRESHOLD:
-                    price        = await _extract_price_from_first_card(page)
-                    match_status = "OK" if price else "NO_RESULTS"
-                    print(
-                        f"[BOOKING] {hotel_name[:45]} → post-search match "
-                        f"(score={score2:.0f}) → price={price}",
-                        flush=True,
-                    )
-                else:
-                    match_status = "MATCH_FAIL"
-                    print(
-                        f"[BOOKING] {hotel_name[:45]} → MATCH_FAIL "
-                        f"(post-search card '{second_name or 'N/A'}' "
-                        f"score={score2:.0f})",
-                        flush=True,
-                    )
 
         except Exception as exc:
-            print(f"[BOOKING] {hotel_name[:45]} → exception: {exc}", flush=True)
+            print(f"[BOOKING] {expected_name[:45]} → exception: {exc}", flush=True)
             match_status = "ERROR"
         finally:
             await context.close()
@@ -1022,39 +1094,48 @@ class PriceCompare:
 
             hotels = await self.get_nuitee_data(browser)
 
-            for hotel in hotels:
-                b_price, b_url, m_status = await self.get_booking_price(
-                    browser, hotel["name"]
+            if hotels:
+                sem = asyncio.Semaphore(self.booking_concurrency)
+
+                async def _fetch_booking(hotel: dict) -> tuple[float | None, str | None, str]:
+                    async with sem:
+                        return await self.get_booking_price(browser, hotel["name"])
+
+                booking_results = await asyncio.gather(
+                    *[_fetch_booking(hotel) for hotel in hotels]
                 )
 
-                if b_price is not None:
-                    diff     = round(b_price - hotel["nuitee_price"], 2)
-                    diff_str = f"{diff:+.2f}"
-                    b_display = f"{b_price:.2f}"
-                else:
-                    diff_str  = "N/A"
-                    b_display = "N/A / SOLD OUT" if m_status != "MATCH_FAIL" else "MATCH_FAIL"
+                for hotel, (b_price, b_url, m_status) in zip(hotels, booking_results):
+                    hotel_name = _normalise_text(str(hotel["name"]))
 
-                print(
-                    f"[RESULT] {hotel['name'][:50]} → {b_display} MAD "
-                    f"(diff: {diff_str})  [{m_status}]",
-                    flush=True,
-                )
+                    if b_price is not None:
+                        diff      = round(b_price - hotel["nuitee_price"], 2)
+                        diff_str  = f"{diff:+.2f}"
+                        b_display = f"{b_price:.2f}"
+                    else:
+                        diff_str  = "N/A"
+                        b_display = "N/A / SOLD OUT" if m_status != "MATCH_FAIL" else "MATCH_FAIL"
 
-                # COL_URL is last: see CSV_HEADER
-                _append_csv_row([
-                    hotel["name"],
-                    self.city,
-                    self.checkin,
-                    self.checkout,
-                    str(self.rooms_config),
-                    self.rooms,
-                    f"{hotel['nuitee_price']:.2f}",
-                    b_display,
-                    diff_str,
-                    m_status,
-                    b_url or "",      # ← Booking URL last
-                ])
+                    print(
+                        f"[RESULT] {hotel_name[:50]} → {b_display} MAD "
+                        f"(diff: {diff_str})  [{m_status}]",
+                        flush=True,
+                    )
+
+                    # COL_URL is last: see CSV_HEADER
+                    _append_csv_row([
+                        hotel_name,
+                        self.city,
+                        self.checkin,
+                        self.checkout,
+                        str(self.rooms_config),
+                        self.rooms,
+                        f"{hotel['nuitee_price']:.2f}",
+                        b_display,
+                        diff_str,
+                        m_status,
+                        b_url or "",      # ← Booking URL last
+                    ])
 
             if not hotels:
                 print(f"[NUITEE] No hotels found for {self.city}", flush=True)
