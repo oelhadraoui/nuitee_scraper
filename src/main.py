@@ -104,8 +104,8 @@ T = {
 }
 
 BOOKING_CONCURRENCY = max(1, int(os.getenv("BOOKING_CONCURRENCY", "4")))
-MAX_SCROLL_PASSES = max(30, int(os.getenv("MAX_SCROLL_PASSES", "180")))
-MAX_SCROLL_SECONDS = max(30, int(os.getenv("MAX_SCROLL_SECONDS", "120")))
+MAX_SCROLL_PASSES = max(30, int(os.getenv("MAX_SCROLL_PASSES", "1000")))
+MAX_SCROLL_SECONDS = max(30, int(os.getenv("MAX_SCROLL_SECONDS", "600")))
 
 BROWSER_ARGS = [
     "--disable-blink-features=AutomationControlled",
