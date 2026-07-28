@@ -1,0 +1,458 @@
+# ===========================================================================
+# config/selectors.yaml
+# ===========================================================================
+# Every DOM selector used by the scrapers lives here, as an ORDERED CASCADE.
+#
+# How the cascade works
+# ---------------------
+# Each key maps to a list of candidate selectors. The engine tries them in
+# order and uses the first one that resolves to a visible element. This means:
+#
+#   * Tune the site without touching Python. When Nuitee ships a redesign you
+#     add one line at the TOP of the relevant list and redeploy.
+#   * Put the most specific, most stable selector first (data-testid), then
+#     class-based selectors, then structural/text fallbacks last.
+#
+# Text-based candidates are intentionally bilingual (EN + FR): the Nuitee
+# white-label renders in the browser's Accept-Language, and Morocco-facing
+# deployments frequently fall back to French.
+#
+# Placeholders
+# ------------
+#   {city}  - substituted with the search city
+#   {iso}   - substituted with an ISO date (YYYY-MM-DD)
+# ===========================================================================
+
+nuitee:
+  # -- cookie / consent banners -------------------------------------------
+  cookie_accept:
+    - '[data-testid="accept-button"]'
+    - 'button:has-text("Accept all")'
+    - 'button:has-text("Accept")'
+    - 'button:has-text("Tout accepter")'
+    - 'button:has-text("J''accepte")'
+    - '#onetrust-accept-btn-handler'
+
+  # -- generic overlays that can interrupt any click -----------------------
+  overlays:
+    - 'button[aria-label="Close"]'
+    - 'button[aria-label="Dismiss"]'
+    - 'button[aria-label="Fermer"]'
+    - '[data-testid="modal-close"]'
+    - '.p-modal__close'
+    - '.modal-mask-closeBtn'
+    - 'button.close-button'
+
+  # -- search form ---------------------------------------------------------
+  destination_input:
+    - '[data-testid="destination-input"]'
+    - 'input[placeholder="Enter a destination"]'
+    - 'input[placeholder*="destination" i]'
+    - 'input[placeholder*="Where" i]'
+    - 'input[placeholder*="Ou allez" i]'
+    - 'input[type="search"]'
+
+  destination_suggestion:
+    - '[data-testid="destination-suggestion"]'
+    - 'ul li[role="option"]'
+    - 'ul li'
+    - '.p-autocomplete__item'
+
+  date_picker:
+    - '[data-testid="date-picker"]'
+    - '[data-testid="date-range"]'
+    - 'button:has-text("Check-in")'
+    - '.p-datePicker__trigger'
+    - 'input[placeholder*="Check" i]'
+
+  calendar_month_title:
+    - '.p-datepicker-title'
+    - '.vc-title'
+    - '[class*="monthYear"]'
+    - '[class*="month-year"]'
+    - '[class*="CalendarMonth_caption"]'
+    - 'table caption'
+    - '[class*="calendar"] h2'
+    - '[class*="datepicker"] h2'
+
+  calendar_next_month:
+    - 'button.p-datepicker-next'
+    - '.vc-arrow.is-right'
+    - 'button[aria-label="Next month" i]'
+    - 'button[aria-label="Mois suivant" i]'
+    - '[data-testid="next-month"]'
+    - 'button[class*="next" i]'
+    - '.p-datepicker-header button:last-child'
+
+  # {iso} is substituted with the target date
+  calendar_day:
+    - '.vc-day.id-{iso}:not(.is-not-in-month) .vc-day-content'
+    - '[data-date="{iso}"]:not([disabled])'
+    - '[data-testid="day-{iso}"]'
+    - 'td[data-date="{iso}"] button'
+
+  calendar_confirm:
+    - '[data-testid="date-apply"]'
+    - 'button[aria-label="Done"]'
+    - 'button:has-text("Done")'
+    - 'button:has-text("Apply")'
+    - 'button:has-text("Valider")'
+    - '.p-datepicker-buttonbar button'
+
+  guests_button:
+    - '[data-testid="guests-button"]'
+    - 'button:has-text("guest")'
+    - 'button:has-text("voyageur")'
+    - '.p-guests__trigger'
+
+  guests_room_panel:
+    - '[id="room-{n}"]'
+    - '[data-testid="room-{n}"]'
+    - '.p-roomOccupancy:nth-of-type({n})'
+
+  guests_stepper_row:
+    - '.p-selectNumber'
+    - '[data-testid="adults-stepper"]'
+    - '[class*="stepper"]'
+
+  guests_stepper_value:
+    - '.number'
+    - '[data-testid="stepper-value"]'
+    - 'span[class*="value"]'
+
+  guests_add_room:
+    - 'button[aria-label="Add room"]'
+    - 'button:has-text("Add room")'
+    - 'button:has-text("Ajouter une chambre")'
+
+  guests_apply:
+    - '[data-testid="guests-apply"]'
+    - 'button:has-text("Apply")'
+    - 'button:has-text("Done")'
+    - 'button:has-text("Valider")'
+
+  search_submit:
+    - '[data-testid="search-button"]'
+    - 'button:has-text("Search")'
+    - 'button:has-text("Rechercher")'
+    - 'button[type="submit"]'
+
+  # -- results page --------------------------------------------------------
+  results_ready:
+    - '[data-testid="hotel-card"]'
+    - '.p-hotelCard'
+    - '[data-testid="hotel-search-result"]'
+
+  results_count:
+    - '[data-testid="hotel-search-result"]'
+    - '[class*="resultCount"]'
+    - '[class*="results-count"]'
+
+  # Verified 2026-07-27 against the live white-label (Vue 3 / PrimeVue SPA).
+  hotel_card:
+    - '.v-hotelList__cards__hotel'
+    - '[class*="hotelList__cards"]'
+    - '[data-testid="hotel-card"]'
+    - '.p-hotelCard'
+    - 'article[class*="hotelCard"]'
+
+  hotel_card_name:
+    - '.p-hotelCard__content__top__title h3'
+    - '[data-testid="hotel-card-name"]'
+    - 'h3'
+    - '[class*="title"] h3'
+
+  hotel_card_price:
+    - '.p-hotelCard__content__bottom__right__price__new'
+    - '[data-testid="hotel-card-price"]'
+    - '[class*="price__new"]'
+    - '[class*="price"]'
+
+  hotel_card_rating:
+    - '.p-hotelCard__content__top__score__number'
+    - '[data-testid="hotel-card-rating"]'
+    - '[class*="score"] [class*="number"]'
+
+  # IMPORTANT: the site renders this as a bare <a class="link"> with NO href
+  # attribute at all - navigation happens entirely via a JS click handler that
+  # calls window.open() with a URL it builds at click time (Vue Router). This
+  # means the href can never be read statically; the only reliable way to
+  # reach the detail page is to click this element and capture the resulting
+  # popup (see NuiteeScraper._open_hotel_detail). Kept only as a best-effort
+  # fallback for a future redesign that DOES set a real href.
+  hotel_card_link:
+    - 'a:has-text("See availability")'
+    - 'button:has-text("See availability")'
+    - 'a[href*="/hotel"]'
+    - 'a[href*="/property"]'
+    - 'a'
+
+  # The results page's "Property name" filter. Typing an exact hotel name
+  # here (or appending `&hotelName=<name>` to the results URL) narrows the
+  # list to that one property - the fast path used by the tunnel phase to
+  # avoid re-scrolling through the full result set for every hotel.
+  hotel_name_filter:
+    - '[data-testid="hotel-name-filter"]'
+    - 'input[placeholder*="Hilton" i]'
+    - 'input[placeholder*="property name" i]'
+
+  # The clickable control on a matched card that opens the hotel detail page
+  # in a new tab/popup. Scoped within one `hotel_card` element by the caller.
+  see_availability_link:
+    - 'a:has-text("See availability")'
+    - 'button:has-text("See availability")'
+    - '.link:has-text("availability")'
+    - 'a'
+
+  end_of_results:
+    - '[data-testid="end-of-results"]'
+    - '.p-noResults'
+    - '[class*="endOfList"]'
+    - '[class*="no-more-results"]'
+
+  # =========================================================================
+  # CHECKOUT TUNNEL
+  # =========================================================================
+  # Panels are identified by `detect` selectors. The navigator waits for ANY
+  # detect selector of ANY panel, then classifies which panel it landed on.
+  # This is what makes the walk robust to panels being skipped or reordered.
+  # =========================================================================
+  # =========================================================================
+  # CHECKOUT TUNNEL  (verified 2026-07-27 against the live white-label)
+  # =========================================================================
+  # Reality of this site, established by live browser inspection - NOT by
+  # guesswork - on 2026-07-27:
+  #
+  #   1. The results-page card has NO real <a href>. Its "See availability"
+  #      control triggers window.open() with a URL built by client-side JS.
+  #      The only reliable way to reach a hotel's detail page is to CLICK it
+  #      and capture the resulting popup (Playwright `page.expect_popup()`).
+  #
+  #   2. There is no multi-panel SPA tunnel (room -> options -> guest ->
+  #      summary -> payment as separate screens). There are exactly TWO
+  #      pages:
+  #        a) /hotels/{id}   - room/rate selection ("Choose your room")
+  #        b) /booking?...   - ONE page that simultaneously shows the guest
+  #                            form, add-ons, promo code, payment fields, AND
+  #                            the final price summary in a persistent right
+  #                            sidebar.
+  #
+  #   3. Clicking a rate's "Choose room" button on the detail page navigates
+  #      the SAME tab to the booking page (unlike step 1, which opens a new
+  #      tab). The final "Total" (e.g. "MAD 650.51", "Includes taxes and
+  #      fees") renders in the sidebar IMMEDIATELY - confirmed by inspecting
+  #      the live page BEFORE filling any guest field. No form-filling is
+  #      required to read the true payable price.
+  #
+  #   4. The payment submit control is `[data-testid="checkout-submit-button"]`
+  #      ("Complete Booking"). This is a HARD BLOCK - see
+  #      `nuitee.tunnel.payment.hard_block_testids` below - checked in
+  #      addition to (not instead of) the text-token guard.
+  # =========================================================================
+  tunnel:
+
+    # -- Page 1: hotel detail / room+rate selection --------------------------
+    room_select:
+      detect:
+        - '.rate-card'
+        - '[data-testid="hotel-choose-room-button"]'
+        - '[class*="roomsOptions"]'
+      # Each `.rate-card` is one bookable OFFER (a room type x rate-plan
+      # combination, e.g. "Deluxe Twin Room / Room with Breakfast"). A hotel
+      # with several room types renders several `.card` groups, each holding
+      # one or more `.rate-card`s - offers are ranked/clicked at the
+      # rate-card level, not the room-type level.
+      room_card:
+        - '.rate-card'
+        - '[class*="rate-card"]'
+      # The room-type heading lives OUTSIDE the rate-card, in the ancestor
+      # `.card` container (e.g. "1 x Deluxe Twin Room"). Combined with the
+      # rate-card's own label (e.g. "Room with Breakfast") in code.
+      room_type_title:
+        - '.card h1'
+        - '[class*="card"] h1'
+      room_name:
+        - '.rate-card b'
+        - '.rate-card strong'
+        - '.rate-card [class*="rateName"]'
+      # No single reliable price-only element (the payable figure is a bare
+      # `<div>` with utility classes only). The parser instead reads the
+      # WHOLE rate-card text with a "min" strategy, which correctly prefers
+      # the discounted price over a struck-through original ("MAD 701" ...
+      # "MAD 591" -> 591) while the 150 MAD floor discards the "+MAD 60
+      # taxes and fees" fragment. Kept as a cascade for when a future
+      # redesign adds a dedicated price element.
+      room_price:
+        - '[class*="align-items-baseline"]'
+        - '.rate-card [class*="price"]:not(.suggestedPrice)'
+      room_refundable_flag:
+        - '.rate-card :text("Free cancellation")'
+        - 'text=/free cancellation/i'
+        - 'text=/annulation gratuite/i'
+      # data-testid confirmed stable and unique - always try this first.
+      cta:
+        - '[data-testid="hotel-choose-room-button"]'
+        - '.rate-card button:has-text("Choose room")'
+        - 'button:has-text("Choose room")'
+        - 'button:has-text("Reserve")'
+        - 'button:has-text("Book")'
+      sold_out:
+        - '[data-testid="no-rooms"]'
+        - 'text=/no rooms available/i'
+        - 'text=/sold out/i'
+        - 'text=/no availability/i'
+        - 'text=/aucune chambre disponible/i'
+
+    # -- Page 2: booking page - guest form + payment + TOTAL, all at once ---
+    # This replaces the old "options" / "guest_details" / "summary" panel
+    # split: on this site they are not separate navigations, they are
+    # sections of one page. The keys are kept so verify_and_correct.py and
+    # the guest-fill fallback still have stable field selectors.
+    booking_page:
+      detect:
+        - '[data-testid="checkout-total-price"]'
+        - '[data-testid="checkout-submit-button"]'
+      first_name:
+        - '#firstName'
+        - '[data-testid="first-name-input"]'
+        - 'input[placeholder*="First name" i]'
+      last_name:
+        - '#lastName'
+        - '[data-testid="last-name-input"]'
+        - 'input[placeholder*="Last name" i]'
+      email:
+        - '#email'
+        - '[data-testid="email-input"]'
+        - 'input[type="email"]'
+      phone:
+        - '#phoneNumber'
+        - 'input[placeholder*="phone number" i]'
+
+    # -- FINAL SUMMARY - the extraction target -------------------------------
+    # Lives in the same right-hand sidebar as the guest form on `/booking`,
+    # confirmed present before any field is filled.
+    summary:
+      detect:
+        - '[data-testid="checkout-total-price"]'
+        - 'text=/includes taxes and fees/i'
+      total_price:
+        - '[data-testid="checkout-total-price"] .price.total'
+        - '[data-testid="checkout-total-price"] .grand-total'
+        - '.p-booking__total__main.grand-total'
+        - '[data-testid="checkout-total-price"]'
+      total_row_labels:
+        - 'total'
+        - 'total price'
+        - 'prix total'
+        - 'grand total'
+        - 'montant total'
+      taxes_and_fees:
+        - 'text=/local fees/i'
+        - 'text=/taxes and fees/i'
+      container:
+        - '[data-testid="checkout-total-price"]'
+        - '.p-booking__detailedReview__roomDetails'
+        - 'aside'
+        - 'main'
+
+    # -- HARD STOP: payment. Detected AND explicitly blocked. ---------------
+    payment:
+      detect:
+        - '[data-testid="checkout-submit-button"]'
+        - 'input[placeholder*="1234 1234" i]'
+        - 'text=/card number/i'
+        - 'text=/numero de carte/i'
+      # Absolute block list, checked by exact test-id in addition to the
+      # text-token guard in `_is_payment_trigger`. Never clicked, ever.
+      hard_block_testids:
+        - 'checkout-submit-button'
+
+    fatal_errors:
+      - 'text=/no longer available/i'
+      - "text=/n'est plus disponible/i"
+      - 'text=/rate has changed/i'
+      - 'text=/price has changed/i'
+      - 'text=/session expired/i'
+      - 'text=/session expiree/i'
+
+    retryable_errors:
+      - 'text=/something went wrong/i'
+      - 'text=/une erreur/i'
+      - 'text=/try again/i'
+      - 'text=/reessayer/i'
+      - 'text=/temporarily unavailable/i'
+
+    loading:
+      - '[data-testid="loading"]'
+      - '[class*="spinner"]'
+      - '[class*="skeleton"]'
+      - '[role="progressbar"]'
+
+booking:
+  overlays:
+    - 'button[aria-label="Dismiss sign-in info."]'
+    - '#onetrust-accept-btn-handler'
+    - 'button[aria-label="Accept"]'
+    - 'button[aria-label="Close"]'
+    - 'button[aria-label="Dismiss"]'
+    - '[data-testid="modal-mask"]'
+    - '.modal-mask-closeBtn'
+    - 'button.bui-button--secondary[aria-label*="Close"]'
+
+  search_submit:
+    - 'button[type="submit"]'
+    - '[data-testid="searchbox-submit-button"]'
+    - 'button:has-text("Search")'
+
+  # The destination box's live autocomplete - used as a fallback when a
+  # deep-linked ``ss=`` query string doesn't resolve to a specific property
+  # (confirmed live: some property names return only city/airport-level
+  # suggestions, never the property itself, e.g. "Ennesma Hotel").
+  destination_input:
+    - 'input[name="ss"]'
+    - '#searchbox-horizontal-destination-input'
+    - 'input[placeholder*="Where are you going" i]'
+
+  destination_suggestion:
+    - '[role="option"]'
+    - 'li[id^="autocomplete-result"]'
+    - '[data-testid="autocomplete-result"]'
+
+  property_card:
+    - '[data-testid="property-card"]'
+    - '.sr_property_block'
+    - '[data-testid="property-card-container"]'
+
+  card_name:
+    - '[data-testid="title"]'
+    - '[data-testid="property-card-name"]'
+    - 'a[data-testid="title-link"] span'
+    - '.sr-hotel__name'
+    - 'h3[class*="header"]'
+    - 'h3'
+
+  card_price:
+    - '[data-testid="price-and-discounted-price"]'
+    - '[data-testid="recommended-units-price"]'
+    - '.bui-price-display__value'
+    - '.prco-valign__middle-helper'
+    - 'span[aria-label*="MAD"]'
+    - 'span[aria-label*="price"]'
+
+  card_link:
+    - 'a[data-testid="title-link"]'
+    - 'h3 a'
+    - 'a[href*="/hotel/"]'
+
+  no_availability_markers:
+    - 'no rooms available'
+    - 'is sold out on our site'
+    - 'no availability for'
+    - 'we have no availability'
+    - 'try changing your dates'
+
+  captcha_markers:
+    - 'unusual traffic'
+    - 'verify you are human'
+    - 'px-captcha'
+    - 'are you a robot'

@@ -1,3 +1,22 @@
+# ---------------------------------------------------------------------------
+# Runtime dependencies
+# ---------------------------------------------------------------------------
+# Pinned exactly: a scraper's behaviour is coupled to its browser version, and
+# an unpinned Playwright upgrade can silently change selector semantics.
+
+# -- browser automation ------------------------------------------------------
 playwright==1.44.0
 playwright-stealth==1.0.6
-python-dotenv==1.0.0
+
+# -- configuration -----------------------------------------------------------
+pydantic==2.7.4
+pydantic-settings==2.7.0
+python-dotenv==1.0.1
+PyYAML==6.0.1
+
+# -- matching & data ---------------------------------------------------------
+rapidfuzz==3.9.3
+pandas==2.2.2
+
+# -- optional: Parquet export (`make export-parquet`) ------------------------
+pyarrow==16.1.0

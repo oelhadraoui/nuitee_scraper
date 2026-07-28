@@ -1,60 +1,115 @@
-version: "3.9"
+# ===========================================================================
+# docker-compose.yml
+# ===========================================================================
+# Services:
+#   scraper        - default full run (both horizons, 3-month window)
+#   horizon-3d     - J+3 only          (profile: horizons)
+#   horizon-7d     - J+7 only          (profile: horizons)
+#   verify         - repair pass       (profile: tools)
+#   report         - quality report    (profile: tools)
+#   shell          - interactive shell (profile: tools)
+#
+# Profiles keep `docker compose up` from starting the tool containers.
+# ===========================================================================
+
+x-scraper-base: &scraper-base
+  build:
+    context: .
+    dockerfile: Dockerfile
+    args:
+      UID: ${UID:-1000}
+      GID: ${GID:-1000}
+  image: nuitee-price-scraper:2.0.0
+
+  # Chromium crashes with the default 64 MB /dev/shm.
+  shm_size: "2gb"
+  ipc: host
+  init: true
+
+  env_file:
+    - .env
+  environment:
+    - PYTHONUNBUFFERED=1
+    - TZ=${TZ:-Africa/Casablanca}
+
+  volumes:
+    - ./output:/app/output
+    - ./input.json:/app/input.json:ro
+    - ./config:/app/config:ro
+    - ./src:/app/src:ro
+
+  working_dir: /app
+  restart: "no"
+
+  deploy:
+    resources:
+      limits:
+        cpus: "${CPU_LIMIT:-4.0}"
+        memory: ${MEM_LIMIT:-8G}
+      reservations:
+        cpus: "1.0"
+        memory: 2G
+
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "50m"
+      max-file: "5"
 
 services:
+  # -- default: both horizons, 3-month rolling window ---------------------
   scraper:
-    container_name: hotel_scraper
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        UID: ${UID:-1000}
-        GID: ${GID:-1000}
+    <<: *scraper-base
+    container_name: nuitee_scraper
+    command: ["run", "--horizon", "all", "--months", "3"]
 
-    # ── Chromium stability ─────────────
-    shm_size: "2gb"
-    ipc: host
+  # -- Horizon 1: J+3 ------------------------------------------------------
+  horizon-3d:
+    <<: *scraper-base
+    container_name: nuitee_horizon_3d
+    profiles: ["horizons"]
+    command: ["run", "--horizon", "3", "--months", "3", "--run-id", "h3"]
 
-    # ── Environment ────────────────────────────────────────────────
-    env_file:
-      - .env
-    environment:
-      - PYTHONUNBUFFERED=1
+  # -- Horizon 2: J+7 ------------------------------------------------------
+  horizon-7d:
+    <<: *scraper-base
+    container_name: nuitee_horizon_7d
+    profiles: ["horizons"]
+    command: ["run", "--horizon", "7", "--months", "3", "--run-id", "h7"]
 
-    # ── Volumes ────────────────────────────────────────────────────
-    volumes:
-      - ./output:/app/output
-      - ./input.json:/app/input.json:ro
-      - ./src:/app/src:ro
+  # -- 2-month fallback window --------------------------------------------
+  fallback-2m:
+    <<: *scraper-base
+    container_name: nuitee_fallback_2m
+    profiles: ["horizons"]
+    command: ["run", "--horizon", "all", "--months", "2"]
 
-    # ── Working directory ──────────────────────────────────────────
-    working_dir: /app
+  # -- verification / repair pass ------------------------------------------
+  verify:
+    <<: *scraper-base
+    container_name: nuitee_verify
+    profiles: ["tools"]
+    command: ["verify", "--mode", "all", "--export"]
 
-    # ── Entrypoint ─────────────────────────────────────────────────
-    command: ["python", "-u", "src/main.py", "--input", "input.json"]
+  # -- quality report -------------------------------------------------------
+  report:
+    <<: *scraper-base
+    container_name: nuitee_report
+    profiles: ["tools"]
+    command: ["report"]
 
-    deploy:
-      resources:
-        limits:
-          cpus: "2.0"
-          memory: 20G
-        reservations:
-          cpus: "1.0"
-          memory: 2G
+  # -- pre-flight check -----------------------------------------------------
+  doctor:
+    <<: *scraper-base
+    container_name: nuitee_doctor
+    profiles: ["tools"]
+    command: ["doctor"]
 
-    # ── Restart policy ─────────────────────────────────────────────
-    restart: unless-stopped
-
-    # ── Health check ────────────
-    healthcheck:
-      test: ["CMD", "pgrep", "-f", "main.py"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 20s
-
-    # ── Logging ────────────────────────────────────────────────────
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "50m"
-        max-file: "5"
+  # -- interactive shell ----------------------------------------------------
+  shell:
+    <<: *scraper-base
+    container_name: nuitee_shell
+    profiles: ["tools"]
+    entrypoint: ["/bin/bash"]
+    stdin_open: true
+    tty: true

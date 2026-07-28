@@ -1,0 +1,47 @@
+[project]
+name = "nuitee-price-scraper"
+version = "2.0.0"
+description = "Nuitee vs Booking.com price competitiveness pipeline with full checkout-tunnel extraction"
+requires-python = ">=3.10"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 90
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle
+    "F",      # pyflakes
+    "I",      # isort
+    "B",      # bugbear
+    "C4",     # comprehensions
+    "SIM",    # simplify
+    "RUF",    # ruff-specific
+]
+ignore = [
+    "E501",    # line length is handled by the formatter
+    "B008",    # function call in default arg - Pydantic Field() idiom
+    "SIM105",  # contextlib.suppress is slower in hot scraping loops
+    "RUF001",  # ambiguous unicode - our selectors and docs are bilingual
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests intentionally use dict() for readable keyword-argument fixtures.
+"tests/*" = ["C408", "B011"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q --strict-markers"
+markers = ["integration: requires network access to Nuitee / Booking.com"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_ignores = true
+ignore_missing_imports = true
