@@ -138,7 +138,22 @@ class BookingScraper:
         return results
 
     async def lookup(self, window: SearchWindow, hotel_name: str) -> BookingResult:
-        """Look up one hotel, with retries on transient failures."""
+        """
+        Look up one hotel, with retries on TRANSIENT failures only.
+
+        The "block point" live-diagnosed 2026-07: a 22-hotel window taking
+        13 minutes for 3 matches. Root cause was that ``MATCH_FAIL`` (no
+        result card cleared the fuzzy threshold) was retried exactly like
+        ``ERROR``, up to ``max_retries`` extra times - but a bad fuzzy score
+        is a deterministic read of the SAME search results, not a fluke of
+        the network. Retrying it re-runs the entire multi-second page-load +
+        destination-resolution sequence for a result that essentially never
+        changes, tripling the cost of every hotel Booking simply doesn't
+        have a good match for - which, on this site, is most of them. Only
+        ``ERROR`` (an exception, timeout, or blocked page) is retried now;
+        ``MATCH_FAIL`` and ``NO_RESULTS`` are both treated as terminal,
+        successfully-determined outcomes.
+        """
         result = BookingResult(status=MatchStatus.ERROR)
         attempts = self._cfg.max_retries + 1
 
@@ -161,7 +176,7 @@ class BookingScraper:
                     attempts=attempt,
                 )
 
-            if result.status in (MatchStatus.OK, MatchStatus.NO_RESULTS):
+            if result.status is not MatchStatus.ERROR:
                 break
             if attempt < attempts:
                 await polite_delay(1.0, 2.5)

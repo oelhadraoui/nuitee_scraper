@@ -66,9 +66,12 @@ class FakeNuitee:
                     error="stalled on guest_details",
                 )
             else:
+                # display_price is a PER-NIGHT rate (matches the real site's
+                # convention, live-verified 2026-07); final_price is the
+                # stay total, so it scales with nights plus a fixed fee.
                 results[key] = TunnelResult(
                     status=TunnelStatus.OK,
-                    final_price=(hotel.display_price or 0) + 250.0,
+                    final_price=(hotel.display_price or 0) * window.nights + 250.0,
                     display_price=hotel.display_price,
                     room_label="Standard Double",
                     panels_visited=["room_select", "guest_details", "summary"],
@@ -84,10 +87,12 @@ class FakeBooking:
 
     async def lookup_many(self, window, hotel_names):
         self.queried.extend(hotel_names)
+        # Booking's card price is already a whole-stay total (live-verified
+        # 2026-07), so it scales with nights just like Nuitee's final_price.
         return {
             normalise_key(name): BookingResult(
                 status=MatchStatus.OK,
-                price=1400.0,
+                price=1400.0 * window.nights,
                 matched_name=name,
                 fuzzy_score=97.0,
                 url=f"https://booking.com/{normalise_key(name)}",
@@ -120,10 +125,11 @@ class TestOrchestration:
 
         by_name = {r["hotel_name"]: r for r in rows}
 
-        # Successful tunnel rows carry the FINAL payable price, not the
-        # display price, and record the hidden-fee delta.
+        # Successful tunnel rows carry the FINAL payable price for the whole
+        # stay (nights=3 for this window), not the per-night display price,
+        # and record the nights-aware hidden-fee delta.
         alpha = by_name["Hotel Alpha"]
-        assert alpha["nuitee_final_price"] == pytest.approx(1150.0)
+        assert alpha["nuitee_final_price"] == pytest.approx(900.0 * 3 + 250.0)
         assert alpha["nuitee_display_price"] == pytest.approx(900.0)
         assert alpha["nuitee_hidden_fees"] == pytest.approx(250.0)
         assert alpha["is_clean"] == 1
@@ -133,8 +139,8 @@ class TestOrchestration:
         )
 
         # Comparison columns are derived correctly.
-        assert alpha["booking_price"] == pytest.approx(1400.0)
-        assert alpha["price_difference"] == pytest.approx(250.0)
+        assert alpha["booking_price"] == pytest.approx(1400.0 * 3)
+        assert alpha["price_difference"] == pytest.approx(1400.0 * 3 - (900.0 * 3 + 250.0))
         assert alpha["cheaper_platform"] == "NUITEE"
 
         # The failed-tunnel hotel is retained, flagged, and NOT clean.

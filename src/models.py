@@ -150,6 +150,35 @@ def format_rooms_config(rooms_config: tuple[int, ...]) -> str:
     return "+".join(str(r) for r in rooms_config) or "2"
 
 
+def compute_hidden_fees(
+    final_price: Optional[float],
+    display_price: Optional[float],
+    nights: int,
+) -> Optional[float]:
+    """
+    The true stay-level fees Nuitee's per-night listing price doesn't show.
+
+    ``display_price`` is a PER-NIGHT rate; ``final_price`` is the TOTAL
+    payable for the whole stay. A naive ``final_price - display_price``
+    (what an earlier version of this pipeline computed) overstates the gap
+    by roughly ``(nights - 1) * display_price`` for anything longer than a
+    single night, since it's comparing a multi-night total against a single
+    night's rate.
+
+    Live-verified 2026-07: a Nuitee rate card reading "MAD 515 / night" for
+    a 3-night stay led to a booking-page breakdown of "MAD 514.77 average
+    per night x 3 nights = MAD 1,544.30" plus a single stay-level "Local
+    fees: MAD 194.30" line, for a "Total: MAD 1,738.60". The correct
+    comparison multiplies the per-night rate by nights BEFORE subtracting:
+    ``1738.60 - (514.77 * 3) = 194.29`` - matching the site's own "Local
+    fees" figure almost exactly, unlike the naive ``1738.60 - 514.77 =
+    1223.83`` a straight subtraction would have reported.
+    """
+    if final_price is None or display_price is None or not nights:
+        return None
+    return round(final_price - (display_price * nights), 2)
+
+
 def parse_rooms_config(text: str) -> tuple[int, ...]:
     """
     Inverse of :func:`format_rooms_config`.
@@ -190,11 +219,21 @@ class RoomOffer:
 
 @dataclass(slots=True)
 class TunnelResult:
-    """Everything the checkout tunnel produced for one hotel."""
+    """
+    Everything the checkout tunnel produced for one hotel.
+
+    ``display_price`` is a PER-NIGHT rate (as shown on the Nuitee results
+    card and the detail page's rate cards - live-verified 2026-07: a card
+    reading "MAD 515 / night" for a 3-night stay led to a booking-page total
+    of "MAD 1,738.60", built from "MAD 514.77 average per night x 3 = MAD
+    1,544.30" plus a single stay-level "Local fees: MAD 194.30" line).
+    ``final_price`` is the TOTAL for the whole stay. The two are NOT on the
+    same basis - see :func:`compute_hidden_fees` for the correct comparison.
+    """
 
     status: TunnelStatus = TunnelStatus.NOT_ATTEMPTED
-    final_price: Optional[float] = None      # true payable total, MAD
-    display_price: Optional[float] = None    # listing price, for delta analysis
+    final_price: Optional[float] = None      # true payable total for the stay, MAD
+    display_price: Optional[float] = None    # per-night listing price, MAD
     currency: str = "MAD"
     room_label: Optional[str] = None
     panels_visited: list[str] = field(default_factory=list)
@@ -209,7 +248,15 @@ class TunnelResult:
 
     @property
     def hidden_fees(self) -> Optional[float]:
-        """Difference between the payable total and the advertised price."""
+        """
+        Naive gap between the stay total and the per-night listing price.
+
+        NOT nights-adjusted - for a multi-night stay this is NOT the true
+        fee amount (it also bundles in every extra night's room cost). Kept
+        for diagnostics/backward compatibility; the CSV's "Nuitee Hidden
+        Fees" column is computed correctly, per-night-aware, by
+        :func:`compute_hidden_fees` at record-assembly time instead.
+        """
         if self.final_price is None or self.display_price is None:
             return None
         return round(self.final_price - self.display_price, 2)
@@ -387,12 +434,12 @@ CSV_HEADER_ALIASES: dict[str, str] = {
     "horizon_label": "Offset",
     "adults_per_room": "Adults per Room",
     "rooms": "Rooms",
-    "nuitee_display_price": "Nuitee Display Price (MAD)",
-    "nuitee_final_price": "Nuitee Final Payable (MAD)",
-    "nuitee_hidden_fees": "Nuitee Hidden Fees (MAD)",
+    "nuitee_display_price": "Nuitee Display Price (MAD, per night)",
+    "nuitee_final_price": "Nuitee Final Payable (MAD, whole stay)",
+    "nuitee_hidden_fees": "Nuitee Hidden Fees (MAD, whole stay)",
     "nuitee_room_label": "Nuitee Room",
     "tunnel_status": "Tunnel Status",
-    "booking_price": "Booking Price (MAD)",
+    "booking_price": "Booking Price (MAD, whole stay)",
     "booking_matched_name": "Booking Matched Name",
     "fuzzy_score": "Fuzzy Score",
     "price_difference": "Price Difference (MAD)",

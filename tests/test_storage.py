@@ -10,6 +10,7 @@ from src.config import Settings
 from src.models import MatchStatus, PriceRecord, TunnelStatus
 from src.pipeline.quality import QualityGate
 from src.pipeline.storage import PriceStore
+from src.utils.text import normalise_key
 
 
 @pytest.fixture
@@ -30,7 +31,7 @@ async def store(settings: Settings) -> PriceStore:
 def make_record(name: str = "Hotel A", city: str = "Casablanca", **kw) -> PriceRecord:
     defaults = dict(
         hotel_name=name,
-        hotel_name_normalised=name.lower(),
+        hotel_name_normalised=normalise_key(name),
         city=city,
         checkin="2026-07-30",
         checkout="2026-07-31",
@@ -137,6 +138,93 @@ class TestResume:
         await st.add(record)
         await st.flush()
         assert st.already_done(record.dedup_key) is False
+
+
+class TestIncrementalCsv:
+    """
+    The CSV must be visible and growing DURING a run, not written once at
+    the very end - ``flush()`` (already called after every search window
+    in the runner) rewrites it directly, without a separate export step.
+    """
+
+    async def test_flush_writes_csv_without_an_explicit_export(
+        self, store: PriceStore, settings: Settings
+    ) -> None:
+        assert not settings.storage.csv_path.exists()
+
+        await store.add(make_record("Hotel A"))
+        await store.flush()
+
+        assert settings.storage.csv_path.exists()
+        assert "Hotel A" in settings.storage.csv_path.read_text(
+            encoding="utf-8-sig"
+        )
+
+    async def test_each_flush_extends_the_csv(
+        self, store: PriceStore, settings: Settings
+    ) -> None:
+        await store.add(make_record("Hotel A"))
+        await store.flush()
+        first_body = settings.storage.csv_path.read_text(encoding="utf-8-sig")
+        assert "Hotel A" in first_body and "Hotel B" not in first_body
+
+        await store.add(make_record("Hotel B", city="Rabat"))
+        await store.flush()
+        second_body = settings.storage.csv_path.read_text(encoding="utf-8-sig")
+        assert "Hotel A" in second_body and "Hotel B" in second_body
+
+    async def test_clean_csv_also_updates_on_flush(
+        self, store: PriceStore, settings: Settings
+    ) -> None:
+        gate = QualityGate(settings)
+        await store.add(gate.evaluate(make_record("Clean Hotel")))
+        await store.flush()
+        assert settings.storage.clean_csv_path.exists()
+        assert "Clean Hotel" in settings.storage.clean_csv_path.read_text(
+            encoding="utf-8-sig"
+        )
+
+
+class TestCsvBootstrapResume:
+    """A fresh ``PriceStore`` (simulating a restarted process) must recover
+    its resume/dedup state from ``prices.csv`` alone - there is no database
+    file to read back from."""
+
+    async def test_fresh_store_loads_prior_clean_rows_from_csv(
+        self, settings: Settings
+    ) -> None:
+        gate = QualityGate(settings)
+
+        first = PriceStore(settings, run_id="run_one")
+        await first.start_run({})
+        record = gate.evaluate(make_record("Hotel A"))
+        await first.add(record)
+        await first.flush()
+        assert first.already_done(record.dedup_key) is True
+
+        # A brand new store, as if the process had restarted - only the CSV
+        # on disk carries the prior state forward.
+        second = PriceStore(settings, run_id="run_two")
+        await second.start_run({})
+
+        assert second.already_done(record.dedup_key) is True
+        assert await second.count() == 1
+
+    async def test_fresh_store_ignores_dirty_rows_for_resume(
+        self, settings: Settings
+    ) -> None:
+        gate = QualityGate(settings)
+
+        first = PriceStore(settings, run_id="run_one")
+        await first.start_run({})
+        record = gate.evaluate(make_record("Hotel A", booking_price=None))
+        assert not record.is_clean
+        await first.add(record)
+        await first.flush()
+
+        second = PriceStore(settings, run_id="run_two")
+        await second.start_run({})
+        assert second.already_done(record.dedup_key) is False
 
 
 class TestExport:

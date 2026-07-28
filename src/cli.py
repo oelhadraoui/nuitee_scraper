@@ -275,8 +275,7 @@ async def cmd_run(args: argparse.Namespace) -> int:
 
     print(f"\nCSV        : {outcome.csv_path}")
     print(f"Clean CSV  : {outcome.clean_csv_path}")
-    print(f"Report     : {settings.storage.report_path}")
-    print(f"Database   : {settings.storage.database_path}\n")
+    print(f"Report     : {settings.storage.report_path}\n")
 
     if args.fail_under_target and not outcome.target_met:
         log.error(

@@ -26,10 +26,13 @@ doesn't recognise at all, e.g. "Ennesma Hotel").
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
 from src.config import Settings
-from src.scrapers.booking import BookingScraper
+from src.models import BookingResult, MatchStatus, SearchWindow
+from src.scrapers.booking import BookingBlockedError, BookingScraper
 from src.utils.selectors import SelectorRegistry
 
 # ---------------------------------------------------------------------------
@@ -219,3 +222,143 @@ class TestResolveDestinationAutocompleteFallback:
 
         assert resolved is False
         assert page.url == STALE_URL
+
+
+# ---------------------------------------------------------------------------
+# lookup() retry policy
+# ---------------------------------------------------------------------------
+
+class TestLookupRetryPolicy:
+    """
+    Live-diagnosed "block point" (2026-07): a 22-hotel window took 13 minutes
+    for 3 matches, because a deterministic ``MATCH_FAIL`` (no card cleared
+    the fuzzy threshold) was retried exactly like a transient ``ERROR`` -
+    tripling the cost of every hotel Booking has no good match for, which is
+    most of a real run. Only ``ERROR`` should trigger a retry now.
+    """
+
+    @pytest.fixture
+    def window(self) -> SearchWindow:
+        return SearchWindow(
+            city="Casablanca",
+            checkin=date(2026, 8, 1),
+            checkout=date(2026, 8, 2),
+            horizon_label="J+3",
+            horizon_offset_days=3,
+            execution_date=date(2026, 7, 29),
+        )
+
+    @pytest.fixture(autouse=True)
+    def _no_real_sleeps(self, monkeypatch) -> None:
+        """These tests exercise the retry loop's *count*, not its pacing -
+        stub out every sleep so a run of them stays fast and deterministic."""
+
+        async def instant(*_args, **_kwargs) -> None:
+            return None
+
+        monkeypatch.setattr("src.scrapers.booking.asyncio.sleep", instant)
+        monkeypatch.setattr("src.scrapers.booking.polite_delay", instant)
+
+    async def test_match_fail_is_not_retried(
+        self, scraper: BookingScraper, window: SearchWindow
+    ) -> None:
+        calls = 0
+
+        async def fake_lookup_once(_window, _name):
+            nonlocal calls
+            calls += 1
+            return BookingResult(status=MatchStatus.MATCH_FAIL, error="scored too low")
+
+        scraper._lookup_once = fake_lookup_once
+
+        result = await scraper.lookup(window, "Some Hotel")
+
+        assert calls == 1
+        assert result.status is MatchStatus.MATCH_FAIL
+
+    async def test_no_results_is_not_retried(
+        self, scraper: BookingScraper, window: SearchWindow
+    ) -> None:
+        calls = 0
+
+        async def fake_lookup_once(_window, _name):
+            nonlocal calls
+            calls += 1
+            return BookingResult(status=MatchStatus.NO_RESULTS)
+
+        scraper._lookup_once = fake_lookup_once
+
+        await scraper.lookup(window, "Some Hotel")
+
+        assert calls == 1
+
+    async def test_error_is_retried_up_to_max_retries(
+        self, scraper: BookingScraper, window: SearchWindow
+    ) -> None:
+        calls = 0
+
+        async def fake_lookup_once(_window, _name):
+            nonlocal calls
+            calls += 1
+            raise RuntimeError("transient navigation failure")
+
+        scraper._lookup_once = fake_lookup_once
+
+        result = await scraper.lookup(window, "Some Hotel")
+
+        assert calls == scraper._cfg.max_retries + 1
+        assert result.status is MatchStatus.ERROR
+
+    async def test_ok_on_first_attempt_stops_immediately(
+        self, scraper: BookingScraper, window: SearchWindow
+    ) -> None:
+        calls = 0
+
+        async def fake_lookup_once(_window, _name):
+            nonlocal calls
+            calls += 1
+            return BookingResult(status=MatchStatus.OK, price=1000.0)
+
+        scraper._lookup_once = fake_lookup_once
+
+        result = await scraper.lookup(window, "Some Hotel")
+
+        assert calls == 1
+        assert result.status is MatchStatus.OK
+
+    async def test_error_then_success_recovers(
+        self, scraper: BookingScraper, window: SearchWindow
+    ) -> None:
+        """A single flaky attempt should still resolve to a real match."""
+        calls = 0
+
+        async def fake_lookup_once(_window, _name):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("timeout")
+            return BookingResult(status=MatchStatus.OK, price=1000.0)
+
+        scraper._lookup_once = fake_lookup_once
+
+        result = await scraper.lookup(window, "Some Hotel")
+
+        assert calls == 2
+        assert result.status is MatchStatus.OK
+
+    async def test_blocked_error_is_retried(
+        self, scraper: BookingScraper, window: SearchWindow
+    ) -> None:
+        calls = 0
+
+        async def fake_lookup_once(_window, _name):
+            nonlocal calls
+            calls += 1
+            raise BookingBlockedError("captcha / bot-check page served")
+
+        scraper._lookup_once = fake_lookup_once
+
+        result = await scraper.lookup(window, "Some Hotel")
+
+        assert calls == scraper._cfg.max_retries + 1
+        assert result.status is MatchStatus.ERROR

@@ -16,7 +16,7 @@ Configuration is grouped into cohesive sub-models:
     BookingSettings   - Booking.com matching + extraction behaviour
     HorizonSettings   - J+3 / J+7 rolling-window generation
     QualitySettings   - the "1,000 clean hotels" acceptance gate
-    StorageSettings   - SQLite / CSV output locations
+    StorageSettings   - CSV output locations (no database file - see storage.py)
 
 Usage
 -----
@@ -425,26 +425,27 @@ class QualitySettings(BaseSettings):
 # ---------------------------------------------------------------------------
 
 class StorageSettings(BaseSettings):
-    """SQLite-backed storage with CSV/Parquet export."""
+    """
+    CSV-backed storage. ``prices.csv`` / ``prices_clean.csv`` are the
+    durable store - they're rewritten after every search window, not just
+    once at the end - with an in-memory SQLite table underneath for fast
+    aggregate queries and resume, rebuilt from the CSV at start-up.
+    """
 
     model_config = SettingsConfigDict(env_prefix="STORAGE_", extra="ignore")
 
     output_dir: Path = DEFAULT_OUTPUT_DIR
-    database_name: str = "hotel_prices.db"
     csv_name: str = "prices.csv"
     clean_csv_name: str = "prices_clean.csv"
     report_name: str = "quality_report.json"
 
-    #: Rows buffered before a batch commit.
+    #: Rows buffered before a batch commit - each commit also rewrites both
+    #: CSV files, so this is the cadence at which progress becomes visible.
     batch_size: int = Field(default=25, ge=1, le=1_000)
 
     #: Skip a (hotel, city, dates, horizon) tuple already stored OK - makes
     #: re-running an interrupted batch idempotent and cheap.
     resume: bool = True
-
-    @property
-    def database_path(self) -> Path:
-        return self.output_dir / self.database_name
 
     @property
     def csv_path(self) -> Path:

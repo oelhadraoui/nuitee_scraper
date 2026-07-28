@@ -1,13 +1,13 @@
-# Nuitée × Booking.com Price Competitiveness Pipeline
+# Nuitée × Booking.com — Price Competitiveness Pipeline
 
-**V2** : full checkout-tunnel price extraction, live-verified against
+**Version 2.2** — full checkout-tunnel price extraction, live-verified against
 both sites, with a two-part statistical acceptance gate (1,000 hotels overall,
 200 per offset/stay-duration crossing).
 
 Scrapes the **true final payable price** from Nuitée's reservation tunnel (not
 the advertised list price), matches each hotel on Booking.com, and measures
-price competitiveness from today's date at two booking horizons about a
-week out and about three months out each tested at two stay lengths.
+price competitiveness from today's date at two booking horizons — about a
+week out and about three months out — each tested at two stay lengths.
 
 ---
 
@@ -17,7 +17,7 @@ If you're not a developer, here's what this tool actually does and why it's
 built the way it is.
 
 **The problem it solves.** A hotel's price on Nuitée's results page is not
-what a guest actually pays taxes, city tax, and service fees get added
+what a guest actually pays — taxes, city tax, and service fees get added
 later, at checkout. So a naive scraper that just reads the results page is
 comparing an *incomplete* Nuitée price against a *complete* Booking.com price,
 which makes Nuitée look artificially cheaper than it really is. This tool
@@ -25,13 +25,14 @@ avoids that trap: for every hotel, it clicks all the way through Nuitée's
 booking flow to the screen right before payment, reads the real total there,
 and only then compares it against Booking.com.
 
-**What you get.** A spreadsheet (and a small database) listing, for each
+**What you get.** A spreadsheet — updated continuously as the scrape runs,
+not just at the end — listing, for each
 hotel in each city, at two booking horizons (about a week ahead of check-in,
 and about three months ahead) and two stay lengths (a short 3-night stay and
 a longer 10-night stay): the real Nuitée price, the Booking.com price, which
 one is cheaper, and by how much. Rows that couldn't be verified cleanly (a
 hotel that couldn't be matched on Booking.com, a price that looks like a data
-error, and so on) are kept but clearly marked as "not clean" nothing is
+error, and so on) are kept but clearly marked as "not clean" — nothing is
 silently thrown away, so you can always see exactly how much data was usable
 and why the rest wasn't.
 
@@ -40,7 +41,7 @@ over "made something up." If the tool can't confidently match a hotel between
 the two sites, it says so instead of guessing. If it can't reach the final
 price, it says so instead of reporting the (misleadingly low) results-page
 price. And it never places a real booking or enters payment details anywhere,
-under any circumstance that guarantee is described in detail in
+under any circumstance — that guarantee is described in detail in
 [§14](#14-safety--compliance).
 
 **Who should read what.** This document is organised so a non-technical
@@ -75,10 +76,10 @@ This pipeline runs a price-competitiveness analysis across four dimensions:
 **platform** (Nuitée vs. Booking.com), **city**, **booking horizon** (how far
 ahead of check-in the traveller is booking), and **stay duration** (how many
 nights). Every output row is tagged with all four, so any crossing of them
-can be sliced from the CSV or the database after the fact.
+can be sliced from the CSV after the fact.
 
 **Two booking horizons, measured from today.** Every hotel is priced from a
-single reference point today's date at two different "how far ahead is
+single reference point — today's date — at two different "how far ahead is
 this booking" horizons: a **short** horizon (about a week out, configurable)
 and a **long** horizon (about three months out, configurable, with its own
 fallback to a nearer month if that horizon's own results turn out too thin).
@@ -87,7 +88,7 @@ See [§4](#4-booking-horizons-and-stay-durations).
 **Two stay durations, tested at both horizons.** Each horizon is tested at a
 short stay (3 nights, configurable) and a longer stay (10 nights,
 configurable), so every city produces exactly `2 horizons x 2 durations = 4`
-search windows not a sweep of simulated scraping dates across a calendar
+search windows — not a sweep of simulated scraping dates across a calendar
 window. This keeps the analysis fast and its size predictable, regardless of
 how many cities are configured.
 
@@ -95,21 +96,21 @@ how many cities are configured.
 For every hotel, a real browser clicks through Nuitée's reservation flow from
 the results page to the screen immediately before payment, and reads the true
 payable total there (room rate + taxes + fees). The results-page price is
-only ever used as a secondary "display price" column for comparison it is
+only ever used as a secondary "display price" column for comparison — it is
 never what gets compared against Booking.com. Full technical detail,
 including how this was verified against the live site, is in
 [§3](#3-how-the-tunnel-navigation-works). The payment screen itself is never
-entered or submitted see [§14](#14-safety--compliance).
+entered or submitted — see [§14](#14-safety--compliance).
 
 **Statistical acceptance criteria.** Two thresholds are enforced, tracked, and
 reported:
 
-- **≥ 1,000 clean hotels overall** `QUALITY_TARGET_CLEAN_HOTELS` (default
+- **≥ 1,000 clean hotels overall** — `QUALITY_TARGET_CLEAN_HOTELS` (default
   1,000). The run stops once this is reached.
 - **≥ 200 clean hotels per horizon × stay-duration crossing**, summed across
-  every city `QUALITY_MIN_CLEAN_HOTELS_PER_CROSSING` (default 200). The run
+  every city — `QUALITY_MIN_CLEAN_HOTELS_PER_CROSSING` (default 200). The run
   does **not** stop early just because the global target is met if any
-  crossing it has touched is still short it keeps going until every
+  crossing it has touched is still short — it keeps going until every
   crossing it's responsible for clears the minimum, or it runs out of plan to
   execute.
 
@@ -122,9 +123,9 @@ which don't, are in every quality report. See
 With only **one** city configured, there are only 4 crossings possible
 (2 horizons × 2 durations), so the *global* 1,000-hotel target and the
 *per-crossing* 200-hotel target both still apply, but there is no statistical
-diversification across cities. This is expected and by design the crossing
+diversification across cities. This is expected and by design — the crossing
 requirement is scoped per horizon × duration, summed across cities, not per
-city alone but it means a meaningful, representative dataset needs multiple
+city alone — but it means a meaningful, representative dataset needs multiple
 cities in `input.json`, not just the one used for a quick smoke-test run.
 
 ---
@@ -137,7 +138,7 @@ cities in `input.json`, not just the one used for a quick smoke-test run.
 cp .env.example .env          # adjust NUITEE_URL if needed
 make build
 make doctor                   # pre-flight: config, selectors, storage
-make run-smoke                # 2 cities x 4 windows verifies the tunnel works
+make run-smoke                # 2 cities x 4 windows — verifies the tunnel works
 make run-full-pipeline        # the real run
 ```
 
@@ -145,8 +146,8 @@ make run-full-pipeline        # the real run
 
 ```bash
 make setup                    # installs deps + Chromium
-python3 -m src.cli doctor
-python3 -m src.cli run --only-offset all
+python -m src.cli doctor
+python -m src.cli run --only-offset all
 ```
 
 ### Recommended first run
@@ -154,15 +155,15 @@ python3 -m src.cli run --only-offset all
 Never launch a multi-day job blind. Escalate:
 
 ```bash
-make run-smoke                                        # ~5 min  is the tunnel alive?
+make run-smoke                                        # ~5 min  — is the tunnel alive?
 make report                                           # inspect the rejection flags
-python3 -m src.cli run --cities "Casablanca,Marrakech" \
-    --hotels-per-city 10                              # ~1 h is the yield sane?
+python -m src.cli run --cities "Casablanca,Marrakech" \
+    --hotels-per-city 10                              # ~1 h — is the yield sane?
 make run-full-pipeline                                # full run
 ```
 
 If `make run-smoke` yields zero clean rows, the tunnel or Booking selectors
-need tuning see [§10](#10-tuning-selectors-without-touching-python). Do not
+need tuning — see [§10](#10-tuning-selectors-without-touching-python). Do not
 scale up first.
 
 ---
@@ -170,11 +171,11 @@ scale up first.
 ## 3. How the tunnel navigation works
 
 This is the core of the implementation (`src/scrapers/tunnel.py`,
-`src/scrapers/nuitee.py`) the direct answer to "how do we get the true
+`src/scrapers/nuitee.py`) — the direct answer to "how do we get the true
 final payable price, not the advertised one" (§1). Its design reflects the
 **real site**, confirmed by live inspection (Claude-in-Chrome DOM/network
 inspection against the actual Nuitée white-label deployment) rather than
-assumed from a generic booking-flow template see
+assumed from a generic booking-flow template — see
 [§3.4](#3-how-the-tunnel-navigation-works) for what that inspection changed
 and why.
 
@@ -191,7 +192,7 @@ inspection established that it is exactly **two pages**:
 
 ```
 results list (/search?...)
-        │  results-list cards carry NO <a href> at all navigation
+        │  results-list cards carry NO <a href> at all — navigation
         │  fires from a JS click handler via window.open(url), so the
         │  target URL only exists once you actually click
         ▼
@@ -210,7 +211,7 @@ booking page  /booking?...                               ── BOOKING_PAGE
 Two consequences drove the whole design:
 
 1. **No `href` to scrape.** `getAttribute('href')` on a results-page card
-   link returns `null` confirmed live (`hasAttribute('href') === false`).
+   link returns `null` — confirmed live (`hasAttribute('href') === false`).
    The URL is only constructed inside the click handler. So capturing a
    hotel's detail URL means *clicking* it and catching the resulting
    `window.open()` popup, not reading markup.
@@ -222,11 +223,11 @@ Two consequences drove the whole design:
 
 ### 3.3 The two-phase pipeline
 
-**Phase 1 harvest + detail-URL capture (`NuiteeScraper.harvest`)**
+**Phase 1 — harvest + detail-URL capture (`NuiteeScraper.harvest`)**
 
 While the results page is still open, every kept hotel (post cheapest-first
 truncation to `NUITEE_HOTELS_PER_CITY`) is isolated one at a time via the
-site's own name-filter input (`[data-testid="hotel-name-filter"]`) not by
+site's own name-filter input (`[data-testid="hotel-name-filter"]`) — not by
 a remembered scroll-index, because the results list is virtualised and
 re-renders, so an index recorded during the scroll pass can silently point at
 a different hotel by the time this runs. For each isolated card:
@@ -240,7 +241,7 @@ hotel.detail_url = popup.url          # the real, click-constructed URL
 await popup.close()                   # only the URL was needed here
 ```
 
-**Phase 2 the tunnel walk (`TunnelNavigator.run`)**, one hotel at a time,
+**Phase 2 — the tunnel walk (`TunnelNavigator.run`)**, one hotel at a time,
 in its own browser context:
 
 1. `goto(detail_url)`, settle (dismiss overlays, wait out spinners).
@@ -249,13 +250,13 @@ in its own browser context:
    strategy so a per-night fragment doesn't beat the nightly rate); sort
    ascending, unpriced offers sort last.
 4. Click the cheapest offer's CTA, payment-guarded, and wait for the URL to
-   contain `/booking`. If a click lands but nothing advances a race when
-   inventory changes mid-page fall through to the next-cheapest offer, up
+   contain `/booking`. If a click lands but nothing advances — a race when
+   inventory changes mid-page — fall through to the next-cheapest offer, up
    to `TUNNEL_ROOM_CANDIDATES` (default 3).
 5. On the booking page: try to read the total **immediately, with no form
    interaction**. Only if that fails, and `TUNNEL_FILL_GUEST_DETAILS` is on,
    fill the guest-form fields (synthetic identity) and retry the read once.
-   No CTA on this page is ever clicked see [§3.7](#3-how-the-tunnel-navigation-works).
+   No CTA on this page is ever clicked — see [§3.7](#3-how-the-tunnel-navigation-works).
 
 ```
 TunnelResult ⇐ OK (total read) | NO_ROOMS | TUNNEL_BLOCKED | PAYMENT_GUARD | ERROR
@@ -275,22 +276,22 @@ independently-arriving panels. §3.2 and §3.3 describe what replaced them.
 already-persisted `Deepest Panel` values, but the navigator itself only ever
 produces `room_select` or `booking_page` now.
 
-### 3.5 Final price extraction three strategies, highest confidence first
+### 3.5 Final price extraction — three strategies, highest confidence first
 
 | # | Strategy | Mechanism | When it wins |
 |---|---|---|---|
 | 1 | **Dedicated element** | `[data-testid="checkout-total-price"] .price.total` (live-verified) | Cleanest markup, tried first, waited for explicitly since the total can take a beat to hydrate after the route push |
 | 2 | **Labelled row scan** | Single `page.evaluate` finds a node whose text matches `"total price"` / `"prix total"` / `"montant total"`, walks up ≤4 levels to a container holding a number | Table layouts with no test id |
-| 3 | **Container sweep** | Largest plausible number in the summary container | Last resort the payable total is by construction the largest figure in an itemised summary |
+| 3 | **Container sweep** | Largest plausible number in the summary container | Last resort — the payable total is by construction the largest figure in an itemised summary |
 
 All strategies feed the same currency-normalising parser, so a summary
 rendered in EUR still lands in the dataset as MAD.
 
 ### 3.6 Resilience
 
-- **Retries**: `TUNNEL_MAX_RETRIES` (default 2), each a *fresh* navigation
+- **Retries**: `TUNNEL_MAX_RETRIES` (default 2), each a *fresh* navigation —
   the SPA holds reservation state in memory, so restarting beats resuming.
-- **Error banners**: separate `fatal_errors` (don't retry the room is gone)
+- **Error banners**: separate `fatal_errors` (don't retry — the room is gone)
   and `retryable_errors` (do retry) cascades, checked on both the detail page
   and the booking page.
 - **Overlay auto-dismiss**: Playwright locator handlers clear modals that
@@ -302,16 +303,16 @@ rendered in EUR still lands in the dataset as MAD.
 
 **No booking is ever submitted.** This is a *structural* property, not just a
 runtime check: the booking-page code path only ever **reads** the total and
-**fills** text inputs it performs zero clicks on that page at all, so there
+**fills** text inputs — it performs zero clicks on that page at all, so there
 is no code path left that could press "Complete Booking" even by accident. On
 top of that, two independent defences guard every click made anywhere in the
 tunnel (i.e. on the detail page, selecting a rate card):
 
-1. **Exact testid hard block** `_is_payment_trigger()` checks the
+1. **Exact testid hard block** — `_is_payment_trigger()` checks the
    element's `data-testid` against `nuitee.tunnel.payment.hard_block_testids`
    (`"checkout-submit-button"`). A literal match blocks the click regardless
    of the element's text.
-2. **Text-token guard** the element's inner text, `aria-label`, `name`,
+2. **Text-token guard** — the element's inner text, `aria-label`, `name`,
    `id`, `value` and `data-testid`, folded through an accent-stripping,
    whitespace-collapsing normaliser, is checked against
    `TUNNEL_PAYMENT_GUARD_TOKENS` (`"pay now"`, `"payer maintenant"`,
@@ -321,7 +322,7 @@ Either match means the candidate is **skipped, not clicked**.
 
 The guest form, when filled, uses a configurable synthetic identity purely as
 a fallback for properties where the total doesn't render until the form is
-touched no real personal data is submitted, and again, nothing on that page
+touched — no real personal data is submitted, and again, nothing on that page
 is ever clicked.
 
 ---
@@ -332,8 +333,8 @@ Implemented in `src/pipeline/horizon_generator.py`.
 
 ### 4.1 The concept
 
-Competitiveness is measured from a single reference point today, call it
-T at two different "how far ahead is this booking" offsets:
+Competitiveness is measured from a single reference point — today, call it
+T — at two different "how far ahead is this booking" offsets:
 
 | Offset | Default | Meaning |
 |---|---|---|
@@ -352,7 +353,7 @@ checkout       = checkin + duration_nights
 ```
 
 This is deliberately **not** a sweep of many simulated scraping dates across
-a calendar window the plan's size stays proportional to the number of
+a calendar window — the plan's size stays proportional to the number of
 cities and stay durations only, which is what keeps a full run finishing in a
 practical amount of time regardless of how many cities are configured.
 
@@ -367,7 +368,7 @@ or `"2M"` if the fallback fired).
 
 The long offset can turn out to have poor availability that far ahead. Rather
 than guess, the pipeline runs the long offset for real, measures the clean
-yield, and only if that yield is too thin re-runs just the long-offset
+yield, and — only if that yield is too thin — re-runs just the long-offset
 windows at the nearer fallback offset (`HORIZON_LONG_OFFSET_FALLBACK_MONTHS`,
 default 2 months) instead. The short offset's windows are never affected by
 this decision.
@@ -379,7 +380,7 @@ This is a **measured decision, not a guess**:
 3. If that yield falls below `HORIZON_MIN_ROWS_PER_OFFSET` (default 10), and
    at least 3 long-offset windows have run (so an infrastructure hiccup is
    never misdiagnosed as an inventory problem), regenerate the long-offset
-   windows at the fallback offset instead same effort, concentrated on a
+   windows at the fallback offset instead — same effort, concentrated on a
    nearer, better-stocked date.
 
 ### 4.4 Execution order
@@ -389,29 +390,29 @@ run killed halfway therefore still covers every city it reached for the
 offset/duration combination it was on, rather than being all-Casablanca.
 Partial runs stay analysable.
 
-### 4.5 Stopping early both targets, not just one
+### 4.5 Stopping early — both targets, not just one
 
 A run stops before exhausting its full plan only when **both** are true: the
 global clean-hotel target is met, **and** every `(offset x stay-duration)`
 crossing the plan touches has independently reached the per-crossing minimum
 (see [§5](#5-data-quality-the-two-acceptance-criteria)). Meeting the global
-target alone is not sufficient to stop otherwise a run could hit 1,000
+target alone is not sufficient to stop — otherwise a run could hit 1,000
 clean hotels entirely from one crossing and quietly skip the rest, which
 would satisfy the raw count but not the statistical-weight requirement.
 
 ### 4.6 Inspecting a plan before running it
 
 ```bash
-python3 -m src.cli plan --dry-run
-python3 -m src.cli plan --only-offset short --json
-python3 -m src.cli plan --durations 3,10 --save output/plan.json
-python3 -m src.cli plan --reference-date 2026-08-15 --dry-run
+python -m src.cli plan --dry-run
+python -m src.cli plan --only-offset short --json
+python -m src.cli plan --durations 3,10 --save output/plan.json
+python -m src.cli plan --reference-date 2026-08-15 --dry-run
 ```
 
 ### 4.7 Sizing a run
 
 ```bash
-python3 scripts/generate_input.py --preview-plan --durations 3,10
+python scripts/generate_input.py --preview-plan --durations 3,10
 ```
 
 ```
@@ -435,7 +436,7 @@ configured stay lengths for a single invocation.
 Two statistical bars apply, not one: at least 1,000 clean hotels overall,
 **and** at least 200 clean hotels in every offset × stay-duration crossing,
 summed across every city. "Clean" is only a meaningful word if it's defined
-precisely and applied mechanically `src/pipeline/quality.py` is that
+precisely and applied mechanically — `src/pipeline/quality.py` is that
 definition, in code.
 
 ### 5.1 The nine checks
@@ -454,7 +455,7 @@ A record is **clean** only when all nine hold:
 | C8 | Hotel, city, dates, horizon all present | `MISSING_IDENTITY` |
 | C9 | `checkout > checkin` | `INVALID_DATES` |
 
-**Every** check runs no short-circuiting. Knowing a row failed on *both* the
+**Every** check runs — no short-circuiting. Knowing a row failed on *both* the
 tunnel and the match is far more diagnostic than knowing it failed the first
 check.
 
@@ -463,12 +464,12 @@ check.
 Failing rows are retained with `is_clean = 0` and a semicolon-separated
 `quality_flags` string. Those rejects are the diagnostic trail that tells you
 whether a shortfall is a *matching* problem, a *tunnel* problem, or an
-*inventory* problem and `make verify` uses exactly that trail to repair
+*inventory* problem — and `make verify` uses exactly that trail to repair
 them.
 
 ### 5.3 The headline metrics
 
-**Metric 1 global.** Counts **distinct clean hotels**, not clean rows:
+**Metric 1 — global.** Counts **distinct clean hotels**, not clean rows:
 
 ```sql
 COUNT(DISTINCT hotel_name_normalised || '|' || city) WHERE is_clean = 1
@@ -478,7 +479,7 @@ The same hotel scraped at the short offset and the long offset is 2 clean
 rows but **1** clean hotel. This is deliberately the conservative reading of
 the metric. Target: `QUALITY_TARGET_CLEAN_HOTELS` (default 1,000).
 
-**Metric 2 per crossing.** The same count, grouped by `(horizon_label,
+**Metric 2 — per crossing.** The same count, grouped by `(horizon_label,
 nights)` and summed across every city. Every crossing the plan touches must
 independently reach `QUALITY_MIN_CLEAN_HOTELS_PER_CROSSING` (default 200).
 This is what makes the sample statistically usable for a short-vs-long
@@ -486,9 +487,9 @@ comparison, rather than just a large but lopsided pile of rows.
 
 ### 5.4 Deduplication
 
-The SQLite primary key is a SHA-1 of
+The in-memory query table's primary key is a SHA-1 of
 `hotel_name_normalised | city | checkin | checkout | horizon_label | rooms | adults`.
-Re-scraping the same stay **UPSERTs** rather than duplicating and the upsert
+Re-scraping the same stay **UPSERTs** rather than duplicating — and the upsert
 carries `WHERE excluded.is_clean >= price_records.is_clean`, so **a failed
 re-scrape can never overwrite good data**.
 
@@ -561,7 +562,7 @@ nuitee_scraper/
 │   ├── pipeline/
 │   │   ├── horizon_generator.py ← today + offsets x durations plans
 │   │   ├── runner.py            ← orchestrator (crossing-aware early exit)
-│   │   ├── storage.py           ← SQLite + CSV/Parquet export
+│   │   ├── storage.py           ← CSV-backed store (in-memory SQLite query engine) + Parquet export
 │   │   └── quality.py           ← the clean gate + reporting (global + per-crossing)
 │   └── utils/
 │       ├── browser.py           ← contexts, fingerprints, stealth, pooling
@@ -571,19 +572,47 @@ nuitee_scraper/
 │       ├── retry.py             ← backoff with full jitter
 │       └── logging_setup.py
 ├── scripts/generate_input.py
-└── tests/                       ← 212 tests
+└── tests/                       ← 223 tests
 ```
 
-### 6.1 Concurrency model
+### 6.1 Storage: CSV is the store, not a database file
+
+`prices.csv` and `prices_clean.csv` are the durable output — there is no
+`.db` file written to disk. Under the hood, `storage.py` keeps a small
+in-memory SQLite table purely as a fast query engine (the aggregate SQL
+behind the quality report and the resume/dedup lookups), rebuilt from
+`prices.csv` at start-up. Two things fall out of that:
+
+- **Progress is visible while a run is in flight.** Every `flush()` — which
+  fires automatically after each search window, and again at `STORAGE_BATCH_SIZE`
+  — rewrites both CSV files from the table's current contents, not just once
+  at the very end. Open `output/prices.csv` mid-run and it reflects whatever
+  has been scraped so far.
+- **No filesystem-locking failures.** SQLite-on-disk needs POSIX file
+  locking, which some Docker bind mounts and network filesystems don't
+  provide — a run could previously fail at start-up with a disk I/O error
+  purely because of where the output directory happened to be mounted.
+  Since nothing SQLite touches ever hits disk, that failure mode is gone.
+
+Resume works the same way it always has: on restart, a fresh process reads
+`prices.csv` back into a new in-memory table before continuing, so
+already-clean rows are still skipped. A handful of internal/diagnostic
+fields that were trimmed out of the CSV in an earlier revision
+(`horizon_offset_days`, `tunnel_deepest_panel`, `tunnel_panels_visited`,
+`run_id`, `verified`) reset to defaults on that resume path, since there's
+no database file left to recover them from — a deliberate tradeoff, since
+none of them affect resume, reporting, or price comparison.
+
+### 6.2 Concurrency model
 
 | Level | Bound by | Default | Rationale |
 |---|---|---|---|
 | Windows | sequential | 1 | Both sites rate-limit per IP; the bottleneck is the tunnel, which is already internally parallel |
 | Tunnel walks | `NUITEE_TUNNEL_CONCURRENCY` | 3 | Heavy and stateful; each gets an isolated context |
 | Booking lookups | `BOOKING_CONCURRENCY` | 4 | Light; the main block risk |
-| Contexts | `BrowserManager` semaphore | max of the two | One browser, many contexts 40 ms and a clean cookie jar each |
+| Contexts | `BrowserManager` semaphore | max of the two | One browser, many contexts — 40 ms and a clean cookie jar each |
 
-### 6.2 Anti-blocking
+### 6.3 Anti-blocking
 
 - Self-consistent fingerprints: UA paired with matching `sec-ch-ua`,
   `sec-ch-ua-platform` and `navigator.platform` (a Windows UA reporting
@@ -592,7 +621,7 @@ nuitee_scraper/
 - Init script patches `navigator.webdriver`, plugins, mimeTypes,
   `window.chrome`, the notification-permission mismatch, and WebGL vendor
   strings (`SwiftShader` is a dead giveaway).
-- Image/media/font requests aborted at the route level ~3× throughput and a
+- Image/media/font requests aborted at the route level — ~3× throughput and a
   smaller bandwidth signature.
 - Randomised inter-request delays; exponential backoff with **full jitter** so
   concurrent workers don't retry in lockstep.
@@ -603,10 +632,10 @@ nuitee_scraper/
 ## 7. CLI reference
 
 ```bash
-python3 -m src.cli <command> [options]
+python -m src.cli <command> [options]
 ```
 
-### `run` execute the pipeline
+### `run` — execute the pipeline
 
 | Option | Default | Description |
 |---|---|---|
@@ -615,8 +644,8 @@ python3 -m src.cli <command> [options]
 | `--only-offset` | `all` | `short`, `long`, or `all` |
 | `--durations` | `3,10` | Comma-separated stay lengths in nights |
 | `--reference-date` | today | The "today" offsets are measured from |
-| `--cities` | | Comma-separated, overrides `--input` |
-| `--limit-windows` | | Cap window count (smoke tests) |
+| `--cities` | — | Comma-separated, overrides `--input` |
+| `--limit-windows` | — | Cap window count (smoke tests) |
 | `--target` | `1000` | Clean-hotel target (global) |
 | `--hotels-per-city` | `25` | Hotels priced per city per date |
 | `--no-tunnel` | off | Use display prices (diagnostics only) |
@@ -627,11 +656,11 @@ python3 -m src.cli <command> [options]
 ### Other commands
 
 ```bash
-python3 -m src.cli plan    --dry-run                  # inspect, don't scrape
-python3 -m src.cli verify  --mode tunnel --limit 500  # repair failures
-python3 -m src.cli report  --json                     # quality report
-python3 -m src.cli export  --clean-only --parquet     # export
-python3 -m src.cli doctor                             # pre-flight check
+python -m src.cli plan    --dry-run                  # inspect, don't scrape
+python -m src.cli verify  --mode tunnel --limit 500  # repair failures
+python -m src.cli report  --json                     # quality report
+python -m src.cli export  --clean-only --parquet     # export
+python -m src.cli doctor                             # pre-flight check
 ```
 
 ### `verify` modes
@@ -646,8 +675,8 @@ python3 -m src.cli doctor                             # pre-flight check
 Legacy CSV migration:
 
 ```bash
-python3 -m src.verify_and_correct --import-csv output/legacy_prices.csv
-python3 -m src.verify_and_correct --mode tunnel     # backfill final prices
+python -m src.verify_and_correct --import-csv output/legacy_prices.csv
+python -m src.verify_and_correct --mode tunnel     # backfill final prices
 ```
 
 ---
@@ -663,7 +692,7 @@ make run-full-pipeline    # scrape → verify → export → report
 make run-offset-short     # short offset only (~1 week out)
 make run-offset-long      # long offset only (~3 months out)
 make run-fallback-2m      # force the long offset's 2-month fallback
-make run-smoke            # 2 cities x 4 windows fast sanity check
+make run-smoke            # 2 cities x 4 windows — fast sanity check
 make plan                 # print the analysis plan
 
 make verify               # repair tunnel + Booking failures
@@ -688,7 +717,7 @@ make run CITIES="Casablanca,Rabat" LIMIT=10
 ## 9. Configuration
 
 All settings live in `.env` (see `.env.example`) and are validated at
-start-up by `src/config.py` a bad value fails immediately rather than
+start-up by `src/config.py` — a bad value fails immediately rather than
 three hours in.
 
 Highest-impact variables:
@@ -751,7 +780,7 @@ Promote the winners to the top; delete candidates that never matched.
 # 1. Capture failures
 TUNNEL_DEBUG_ARTIFACTS=true make run-smoke
 
-# 2. Inspect output/debug/*.html find the real selector
+# 2. Inspect output/debug/*.html — find the real selector
 
 # 3. Add it at the TOP of the relevant cascade in config/selectors.yaml
 
@@ -759,21 +788,23 @@ TUNNEL_DEBUG_ARTIFACTS=true make run-smoke
 make verify-tunnel LIMIT=50
 ```
 
-`python3 -m src.cli doctor` fails fast if any required selector path is
+`python -m src.cli doctor` fails fast if any required selector path is
 missing.
 
 ---
 
 ## 11. Output schema
 
-Written to `output/` (`prices.csv`, `prices_clean.csv`, `hotel_prices.db`,
-`quality_report.json`). `Booking URL` is the **last** column, matching the
-original convention.
+Written to `output/` (`prices.csv`, `prices_clean.csv`, `quality_report.json`).
+`Booking URL` is the **last** column, matching the original convention.
+`prices.csv` is rewritten after every search window completes, not only once
+the whole run finishes, so you can open it mid-run and see results as they
+come in.
 
 The CSV export deliberately leaves out a handful of internal/operational
 fields (a numeric horizon-offset-in-days, the deepest tunnel panel reached,
-the run identifier, a verification flag) that are tracked in the SQLite
-database for diagnostics but aren't something a reader comparing prices
+the run identifier, a verification flag) that are tracked in the in-memory
+query table for diagnostics but aren't something a reader comparing prices
 needs.
 
 | Column | Description |
@@ -782,20 +813,30 @@ needs.
 | `Check-in`, `Check-out`, `Nights` | The stay |
 | `Offset` | Which booking horizon (`1W`, `3M`, `2M` if the fallback fired, etc.) |
 | `Adults per Room`, `Rooms` | Occupancy |
-| **`Nuitee Display Price (MAD)`** | Advertised list price |
-| **`Nuitee Final Payable (MAD)`** | **True total incl. taxes & fees** ← the whole point of the checkout-tunnel approach |
-| **`Nuitee Hidden Fees (MAD)`** | Final − display: what the list price omitted |
+| **`Nuitee Display Price (MAD, per night)`** | Advertised list price — a **per-night** rate, as shown on Nuitée's own results/rate cards |
+| **`Nuitee Final Payable (MAD, whole stay)`** | **True total for the whole stay, incl. taxes & fees** ← the whole point of the checkout-tunnel approach |
+| **`Nuitee Hidden Fees (MAD, whole stay)`** | Final − (display × nights): what the per-night list price omitted, scaled up to the same whole-stay basis as Final |
 | `Nuitee Room` | Cheapest offer selected |
 | `Tunnel Status` | How far the walk got |
-| `Booking Price (MAD)`, `Booking Matched Name`, `Fuzzy Score` | Booking side |
+| `Booking Price (MAD, whole stay)`, `Booking Matched Name`, `Fuzzy Score` | Booking side — also a whole-stay total, pre-tax (Booking shows its own taxes/charges separately on-page) |
 | `Price Difference (MAD)`, `Price Difference (%)` | Booking − Nuitée |
 | `Cheaper Platform` | `NUITEE` / `BOOKING` / `TIE` |
 | `Match Status`, `Clean`, `Quality Flags` | Provenance |
 | `Nuitee URL`, `Booking URL` | Direct links |
 
-The `Nuitee Hidden Fees` column is often the most commercially interesting:
-it quantifies exactly how much the advertised price understates the payable
-total the whole reason the checkout-tunnel approach exists.
+**Per-night vs. whole-stay, and why it matters.** Nuitée's display price is
+quoted per night (e.g. "MAD 515 / night"), but the final payable price from
+the checkout tunnel is a whole-stay total — the per-night rate multiplied by
+the number of nights, plus a stay-level "local fees" charge. Comparing the two
+directly (`final − display`) without accounting for nights produces a wildly
+inflated, meaningless number on any stay longer than one night; `Nuitee Hidden
+Fees` instead multiplies the display price out to the same whole-stay basis
+first (`final − (display × nights)`) before taking the difference, so it
+actually reflects the local/service fees the per-night rate didn't show —
+live-verified against Nuitée's own on-page fee breakdown. `Booking Price` was
+already a whole-stay total on both platforms, so `Price Difference` and
+`Cheaper Platform` (which compare `Booking Price` against `Nuitee Final
+Payable` directly) needed no such adjustment.
 
 `quality_report.json` additionally carries a `crossings` object:
 `{"min_clean_hotels_per_crossing": 200, "met": true|false, "by_crossing":
@@ -816,12 +857,12 @@ forces an immediate exit.
 A live investigation found that Booking.com's search-results page, when
 loaded directly via a deep link (`searchresults.html?ss=...`), frequently
 renders a **false "Unavailable on our site for your selected dates"** card
-for a property that has real, bookable inventory confirmed for three
+for a property that has real, bookable inventory — confirmed for three
 unrelated hotels (a 5-star chain, a mid-range independent, a boutique riad),
 all of which showed a normal priced card the instant the on-page Search
 button was actually clicked. This is why, before the fix, a large share of
 otherwise-healthy hotels were coming back `NO_RESULTS` with a perfect 100%
-name match but no price the match was correct, but the page it was read
+name match but no price — the match was correct, but the page it was read
 from was stale.
 
 The fix (`BookingScraper._resolve_destination`) clicks Search and **verifies**
@@ -830,35 +871,51 @@ fresh overlay sweep if not, and falling back to driving Booking's own
 destination autocomplete for the handful of property names it can't resolve
 via a plain query string at all (also live-confirmed, for a different
 property). If you see `MISSING_BOOKING_PRICE` on properties you know are
-bookable, this is the first place to look see
+bookable, this is the first place to look — see
 `src/scrapers/booking.py`'s module docstring for the full write-up.
 
-### 12.3 Common issues
+### 12.3 The Booking.com "retrying a foregone conclusion" slowdown (fixed)
+
+A live run showed one window taking 13 minutes to look up 22 hotels and
+matching only 3 of them. The cause: `BookingScraper.lookup()`'s retry loop
+treated `MATCH_FAIL` (no result card cleared the fuzzy-match threshold) the
+same as a transient `ERROR` — retrying it up to `BOOKING_MAX_RETRIES` extra
+times. A bad fuzzy score is a deterministic read of the same search results,
+not a network fluke; retrying it re-runs the entire multi-second page-load
+and destination-resolution sequence for an answer that essentially never
+changes, which triples the cost of every hotel Booking has no good match
+for — on a real run, most of them. The fix retries only `ERROR` (an
+exception, timeout, or blocked/captcha page); `MATCH_FAIL` and `NO_RESULTS`
+are now treated as terminal, successfully-determined outcomes on the first
+attempt. If a window still runs slowly, check `BOOKING_CONCURRENCY` and the
+logs for repeated `ERROR`s (those still retry, by design).
+
+### 12.4 Common issues
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `doctor`: `SQLite cannot operate on …` | Filesystem lacks POSIX locking (NFS/SMB, some Docker Desktop bind mounts) | Set `STORAGE_OUTPUT_DIR` to a local path, or use a named Docker volume |
+| `doctor`: `Cannot create the output directory …` | `STORAGE_OUTPUT_DIR` points somewhere unwritable | Set `STORAGE_OUTPUT_DIR` to a local, writable path, or use a named Docker volume |
 | All rows `TUNNEL_FAILED` | Tunnel selectors stale | `TUNNEL_DEBUG_ARTIFACTS=true`, inspect `output/debug/`, update the YAML |
 | Many rows `NO_RESULTS` with a 100% name match but no price | Stale Booking.com deep link (see §12.2) | Should self-heal via `_resolve_destination`'s retry; if persistent, check for a new overlay/modal covering the Search button |
 | All rows `NO_MATCH` | Threshold too strict, or blocked | Check for `captcha_markers` in the logs; lower `BOOKING_FUZZY_THRESHOLD` |
-| Chromium crashes | `/dev/shm` too small | `shm_size: "2gb"` is already set in compose confirm it applied |
+| Chromium crashes | `/dev/shm` too small | `shm_size: "2gb"` is already set in compose — confirm it applied |
 | `Executable doesn't exist` | Playwright/base-image version drift | Keep `PLAYWRIGHT_VERSION` in the Dockerfile in sync with `requirements.txt` |
 | Zero hotels harvested | Wrong destination suggestion picked | Check the `_click_city_suggestion` debug log; the airport/region filter may need a new exclusion token |
 | Memory growth | Too many concurrent contexts | Lower `NUITEE_TUNNEL_CONCURRENCY` |
 
-### 12.4 Scaling to 1,000+ clean hotels (and 200+ per crossing)
+### 12.5 Scaling to 1,000+ clean hotels (and 200+ per crossing)
 
 Ordered by cost-effectiveness:
 
-1. **Add cities** `python3 scripts/generate_input.py --preset morocco --preset europe`
-   the most direct way to satisfy the per-crossing minimum broadly, since
+1. **Add cities** — `python scripts/generate_input.py --preset morocco --preset europe`
+   — the most direct way to satisfy the per-crossing minimum broadly, since
    each new city contributes to all 4 crossings (2 offsets × 2 durations).
-2. **Raise `NUITEE_HOTELS_PER_CITY`** linear yield increase, linear cost.
-3. **Add stay durations** via `HORIZON_STAY_DURATIONS_NIGHTS` more
+2. **Raise `NUITEE_HOTELS_PER_CITY`** — linear yield increase, linear cost.
+3. **Add stay durations** via `HORIZON_STAY_DURATIONS_NIGHTS` — more
    crossings to spread the sample across, at the cost of more windows.
-4. **Lower `BOOKING_FUZZY_THRESHOLD` to ~80** watch `IMPLAUSIBLE_RATIO` for
+4. **Lower `BOOKING_FUZZY_THRESHOLD` to ~80** — watch `IMPLAUSIBLE_RATIO` for
    the false-positive cost.
-5. **Run `make verify`** typically recovers 20–40% of failed rows for a
+5. **Run `make verify`** — typically recovers 20–40% of failed rows for a
    fraction of the original cost.
 
 ---
@@ -866,7 +923,7 @@ Ordered by cost-effectiveness:
 ## 13. Testing
 
 ```bash
-make test          # 212 tests
+make test          # 223 tests
 make test-cov      # with coverage
 ```
 
@@ -875,24 +932,24 @@ make test-cov      # with coverage
 | `test_pricing.py` | Noise stripping, 6 locale separator formats, FX, min/max/first strategies, bounds |
 | `test_horizon_generator.py` | Month clamping, offset resolution, plan cartesian, offset-major ordering, fallback decision |
 | `test_quality.py` | All 9 clean checks, derived fields, dedup key stability, fuzzy matching |
-| `test_storage.py` | UPSERT dedup, resume, "dirty never overwrites clean", CSV column order, report aggregates |
+| `test_storage.py` | UPSERT dedup, resume, "dirty never overwrites clean", incremental CSV writes on every `flush()`, cross-process CSV-bootstrap resume, CSV column order, report aggregates |
 | `test_selectors_and_cli.py` | Cascade resolution, placeholder substitution, payment-guard config, verifier row selection, CLI parsing, both input formats |
 | `test_tunnel_logic.py` | Payment guard (text-token + exact-testid hard block), room ranking, price-extraction cascade, required selector paths |
-| `test_booking_logic.py` | Destination-resolution retry/fallback logic (the fix in §12.2) |
+| `test_booking_logic.py` | Destination-resolution retry/fallback logic (§12.2), and that only transient errors — not a deterministic no-match — trigger a retry |
 | `test_runner_integration.py` | **Mocked end-to-end**: harvest → tunnel → Booking → gate → persist → report → export, plus global *and* per-crossing early exit, and resume |
 
 Notable regression tests:
 
-- `test_ascii_space_does_not_merge_unrelated_numbers` `"890 1250"` must
+- `test_ascii_space_does_not_merge_unrelated_numbers` — `"890 1250"` must
   never parse as `8901250`, the classic silent-garbage bug.
-- `test_dirty_row_never_overwrites_a_clean_one` a failed re-scrape must not
+- `test_dirty_row_never_overwrites_a_clean_one` — a failed re-scrape must not
   destroy good data.
-- `test_booking_skipped_for_unpriced_hotels` no page load is spent on a
+- `test_booking_skipped_for_unpriced_hotels` — no page load is spent on a
   lookup that cannot produce a clean row.
-- `test_click_that_does_nothing_is_not_trusted` a Booking search-submit
+- `test_click_that_does_nothing_is_not_trusted` — a Booking search-submit
   click that "succeeds" but never resolves a destination must not be trusted
   as if it had (the actual production bug, reproduced as a unit test).
-- `test_global_target_alone_does_not_trigger_early_exit` hitting the
+- `test_global_target_alone_does_not_trigger_early_exit` — hitting the
   1,000-hotel target from one crossing must not skip a different crossing
   that still needs work.
 
@@ -901,7 +958,7 @@ Notable regression tests:
 ## 14. Safety & compliance
 
 - **No bookings are ever made.** The booking page's submit control is never
-  clicked the navigator only reads its total and fills text inputs, so
+  clicked — the navigator only reads its total and fills text inputs, so
   there's no code path that presses it even by accident. Every click made
   anywhere in the tunnel (selecting a rate card) is additionally screened
   against both an exact-testid hard block and the payment-token text guard.

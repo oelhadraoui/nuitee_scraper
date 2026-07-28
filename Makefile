@@ -46,7 +46,7 @@ help:
 	@echo "    make build               Build the Docker image"
 	@echo "    make setup               Local venv install + Chromium"
 	@echo "    make input               Regenerate input.json (city list)"
-	@echo "    make doctor              Pre-flight check (config, selectors, DB)"
+	@echo "    make doctor              Pre-flight check (config, selectors, storage)"
 	@echo ""
 	@echo "  PIPELINE"
 	@echo "    make run-full-pipeline   Both offsets, both durations, then verify"
@@ -206,14 +206,14 @@ stop:
 .PHONY: clean
 clean: stop
 	-$(COMPOSE) rm -f $(SERVICE)
-	@echo "[clean] clearing $(OUTPUT) (database preserved)..."
-	@find $(OUTPUT) -mindepth 1 ! -name '.gitkeep' ! -name '*.db' -delete 2>/dev/null || true
+	@echo "[clean] clearing $(OUTPUT) (prices.csv / prices_clean.csv preserved)..."
+	@find $(OUTPUT) -mindepth 1 ! -name '.gitkeep' ! -name '*.csv' -delete 2>/dev/null || true
 
-.PHONY: clean-db
-clean-db:
-	@echo "[clean-db] DELETING the scraped dataset."
+.PHONY: clean-data
+clean-data:
+	@echo "[clean-data] DELETING the scraped dataset (prices.csv, prices_clean.csv)."
 	@read -p "Type 'yes' to confirm: " ok; [ "$$ok" = "yes" ] || exit 1
-	@rm -f $(OUTPUT)/*.db $(OUTPUT)/*.db-wal $(OUTPUT)/*.db-shm
+	@rm -f $(OUTPUT)/prices.csv $(OUTPUT)/prices_clean.csv
 
 .PHONY: nuke
 nuke: clean

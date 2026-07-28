@@ -50,6 +50,7 @@ from src.models import (
     SearchWindow,
     TunnelResult,
     TunnelStatus,
+    compute_hidden_fees,
     format_rooms_config,
 )
 from src.pipeline.horizon_generator import HorizonGenerator, HorizonPlan
@@ -401,7 +402,11 @@ class PipelineRunner:
 
             nuitee_display_price=tunnel.display_price or hotel.display_price,
             nuitee_final_price=tunnel.final_price,
-            nuitee_hidden_fees=tunnel.hidden_fees,
+            nuitee_hidden_fees=compute_hidden_fees(
+                tunnel.final_price,
+                tunnel.display_price or hotel.display_price,
+                window.nights,
+            ),
             nuitee_room_label=tunnel.room_label,
             tunnel_status=tunnel.status.value
             if isinstance(tunnel.status, TunnelStatus)

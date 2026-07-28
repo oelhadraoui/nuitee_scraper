@@ -19,9 +19,11 @@ requirements, it now handles BOTH failure surfaces:
 A row can need both, in which case both run and the record is rebuilt from
 scratch before being re-gated.
 
-It operates directly on the SQLite store (source of truth) and can also ingest
-a legacy CSV, so the CSVs produced by the previous version of this project can
-be repaired and migrated in one command.
+It operates directly on the PriceStore (its in-memory query table is
+bootstrapped from prices.csv - the actual source of truth on disk - at
+start-up) and can also ingest a legacy CSV, so the CSVs produced by the
+previous version of this project can be repaired and migrated in one
+command.
 
 Usage
 -----
@@ -48,6 +50,7 @@ from src.models import (
     SearchWindow,
     TunnelResult,
     TunnelStatus,
+    compute_hidden_fees,
     format_rooms_config,
     parse_rooms_config,
 )
@@ -368,7 +371,9 @@ class Verifier:
 
             nuitee_display_price=tunnel.display_price,
             nuitee_final_price=tunnel.final_price,
-            nuitee_hidden_fees=tunnel.hidden_fees,
+            nuitee_hidden_fees=compute_hidden_fees(
+                tunnel.final_price, tunnel.display_price, window.nights
+            ),
             nuitee_room_label=tunnel.room_label,
             tunnel_status=tunnel.status.value,
             tunnel_deepest_panel=tunnel.deepest_panel,
