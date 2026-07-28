@@ -133,29 +133,40 @@ class TestCli:
         from src.cli import build_parser
 
         parser = build_parser()
-        args = parser.parse_args(["run", "--horizon", "3", "--months", "2"])
+        args = parser.parse_args(
+            ["run", "--only-offset", "long", "--durations", "3,10"]
+        )
         assert args.command == "run"
-        assert args.horizon == "3"
-        assert args.months == 2
+        assert args.only_offset == "long"
+        assert args.durations == "3,10"
 
     @pytest.mark.parametrize(
         "value,expected",
-        [("3", [3]), ("7", [7]), ("3,7", [3, 7]), ("all", None), ("J+3", [3])],
+        [("short", "short"), ("long", "long"), ("all", None), ("", None)],
     )
-    def test_horizon_parsing(self, value: str, expected) -> None:
-        from src.cli import _parse_horizons
+    def test_only_offset_parsing(self, value: str, expected) -> None:
+        from src.cli import _parse_only_offset
 
-        assert _parse_horizons(value) == expected
+        assert _parse_only_offset(value) == expected
+
+    @pytest.mark.parametrize(
+        "value,expected",
+        [("3", [3]), ("3,10", [3, 10]), (None, None), ("", None)],
+    )
+    def test_durations_parsing(self, value, expected) -> None:
+        from src.cli import _parse_durations
+
+        assert _parse_durations(value) == expected
 
     def test_legacy_entrypoint_defaults_to_run(self, monkeypatch) -> None:
-        """`python src/main.py --horizon 3` must still work."""
+        """`python src/main.py --only-offset short` must still work."""
         import src.main as main_module
 
         captured = {}
         monkeypatch.setattr(main_module, "cli_main", lambda argv: captured.update(argv=argv))
-        monkeypatch.setattr("sys.argv", ["main.py", "--horizon", "3"])
+        monkeypatch.setattr("sys.argv", ["main.py", "--only-offset", "short"])
         main_module.main()
-        assert captured["argv"] == ["run", "--horizon", "3"]
+        assert captured["argv"] == ["run", "--only-offset", "short"]
 
     def test_explicit_subcommand_preserved(self, monkeypatch) -> None:
         import src.main as main_module

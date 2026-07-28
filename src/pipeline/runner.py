@@ -24,11 +24,11 @@ Design decisions
   a page load on it is pure waste.
 
 * **Early exit on target.** Once the distinct-clean-hotel target is reached
-  AND every (city x horizon) crossing has independently reached
+  AND every (offset x stay-duration) crossing has independently reached
   ``QUALITY_MIN_CLEAN_HOTELS_PER_CROSSING``, the run stops. Hitting 1,000
   clean rows from a single crossing would satisfy the raw count but not the
-  client's per-crossing statistical-weight requirement, so the global target
-  alone is never sufficient to stop early.
+  per-crossing statistical-weight requirement, so the global target alone is
+  never sufficient to stop early.
 
 * **Graceful shutdown.** SIGINT/SIGTERM set an event; the in-flight window
   finishes, buffers flush, exports run. You never lose six hours to a Ctrl-C.
@@ -50,6 +50,7 @@ from src.models import (
     SearchWindow,
     TunnelResult,
     TunnelStatus,
+    format_rooms_config,
 )
 from src.pipeline.horizon_generator import HorizonGenerator, HorizonPlan
 from src.pipeline.quality import QualityGate, QualityReport
@@ -120,7 +121,7 @@ class PipelineRunner:
     # ======================================================================
 
     async def run(self, plan: HorizonPlan) -> RunOutcome:
-        """Execute ``plan``, with automatic 3-month -> 2-month fallback."""
+        """Execute ``plan``, with automatic long-offset fallback."""
         self._install_signal_handlers()
         await self.store.start_run(plan.summary())
 
@@ -138,25 +139,47 @@ class PipelineRunner:
 
             await self._execute_plan(plan, nuitee, booking)
 
-            # -- fallback decision (Requirement C) --------------------------
-            if not self._shutdown.is_set() and not plan.is_fallback:
-                clean_now = await self.store.clean_count()
+            # -- long-offset fallback decision -------------------------------
+            # Only the long offset ("3M" by default) can trigger a fallback;
+            # the short offset ("1W") is unaffected and is never re-run here.
+            # ``build_plan`` always resolves offsets short-then-long, so the
+            # second label (if present) is the long one.
+            long_label = (
+                plan.offset_labels[1] if len(plan.offset_labels) > 1 else None
+            )
+
+            if not self._shutdown.is_set() and not plan.is_fallback and long_label:
                 generator = HorizonGenerator(self.settings.horizon)
-                needs_fallback = (
-                    clean_now < self.settings.quality.target_clean_hotels
-                    and generator.should_fallback(clean_now, self._windows_executed)
+                long_rows = await self.store.aggregate(
+                    "SELECT COUNT(*) AS n, "
+                    "SUM(CASE WHEN is_clean=1 THEN 1 ELSE 0 END) AS clean_n "
+                    "FROM price_records WHERE horizon_label = ?",
+                    (long_label,),
+                )
+                long_clean = int(long_rows[0]["clean_n"] or 0) if long_rows else 0
+                long_windows = sum(
+                    1 for w in plan.windows if w.horizon_label == long_label
+                )
+                needs_fallback = generator.should_fallback_long_offset(
+                    long_clean, long_windows
                 )
                 if needs_fallback:
-                    fallback_plan = generator.build_fallback_plan(
+                    fallback_plan = generator.build_plan(
                         plan.cities,
-                        start=plan.start_date,
-                        offsets=[h.offset_days for h in plan.horizons],
-                        rooms_config=plan.windows[0].rooms_config if plan.windows else (2,),
+                        reference_date=plan.reference_date,
+                        use_fallback_long_offset=True,
+                        only="long",
+                        durations=plan.durations_nights,
+                        rooms_config=(
+                            plan.windows[0].rooms_config if plan.windows else (2,)
+                        ),
                     )
                     log.warning(
-                        "Wide window under-delivered (%d clean) - running the "
-                        "%d-month fallback plan",
-                        clean_now, fallback_plan.months,
+                        "Long offset %r under-delivered (%d clean over %d "
+                        "windows) - running the fallback offset %r instead",
+                        long_label, long_clean, long_windows,
+                        fallback_plan.offset_labels[0]
+                        if fallback_plan.offset_labels else "?",
                     )
                     await self._execute_plan(fallback_plan, nuitee, booking)
                     plan = fallback_plan
@@ -197,12 +220,13 @@ class PipelineRunner:
         target = self.settings.quality.target_clean_hotels
         crossing_min = self.settings.quality.min_clean_hotels_per_crossing
 
-        # Every (city x horizon) pair this plan will touch. The global
-        # target alone is not the client's full acceptance criterion - each
-        # of these crossings must independently reach ``crossing_min`` too,
-        # so stopping early requires BOTH conditions, not just the global one.
+        # Every (offset x stay-duration) pair this plan will touch, summed
+        # across all cities. The global target alone is not the full
+        # acceptance criterion - each of these crossings must independently
+        # reach ``crossing_min`` too, so stopping early requires BOTH
+        # conditions, not just the global one.
         expected_crossings = sorted(
-            {(w.city, w.horizon_label) for w in plan.windows}
+            {(w.horizon_label, w.nights) for w in plan.windows}
         )
 
         for index, window in enumerate(plan.windows, start=1):
@@ -218,7 +242,7 @@ class PipelineRunner:
                 if not shortfall:
                     log.info(
                         "Target reached (%d/%d clean hotels) and every "
-                        "city x horizon crossing has >= %d clean hotels - "
+                        "offset x duration crossing has >= %d clean hotels - "
                         "stopping early",
                         clean_so_far, target, crossing_min,
                     )
@@ -227,7 +251,7 @@ class PipelineRunner:
                     "Global target met (%d/%d) but %d crossing(s) still "
                     "below %d clean hotels (%s) - continuing",
                     clean_so_far, target, len(shortfall), crossing_min,
-                    ", ".join(f"{c}/{h}" for c, h in shortfall),
+                    ", ".join(f"{label}/{nights}n" for label, nights in shortfall),
                 )
 
             log.info(
@@ -251,16 +275,21 @@ class PipelineRunner:
             await self.store.flush()
 
     async def _crossing_shortfall(
-        self, expected_crossings: list[tuple[str, str]], crossing_min: int
-    ) -> list[tuple[str, str]]:
-        """(city, horizon) pairs that have not yet reached ``crossing_min``."""
+        self, expected_crossings: list[tuple[str, int]], crossing_min: int
+    ) -> list[tuple[str, int]]:
+        """
+        (horizon_label, nights) pairs that have not yet reached
+        ``crossing_min`` clean hotels, summed across every city.
+        """
         rows = await self.store.aggregate(
-            "SELECT city, horizon_label, "
+            "SELECT horizon_label, nights, "
             "SUM(CASE WHEN is_clean=1 THEN 1 ELSE 0 END) AS clean_n "
-            "FROM price_records GROUP BY city, horizon_label"
+            "FROM price_records GROUP BY horizon_label, nights"
         )
         counts = {
-            (row["city"] or "", row["horizon_label"] or ""): int(row["clean_n"] or 0)
+            (row["horizon_label"] or "", int(row["nights"] or 0)): int(
+                row["clean_n"] or 0
+            )
             for row in rows
         }
         return [
@@ -347,7 +376,7 @@ class PipelineRunner:
             horizon_offset_days=window.horizon_offset_days,
             execution_date=window.execution_date.isoformat(),
             rooms=window.rooms,
-            adults_per_room=str(list(window.rooms_config)),
+            adults_per_room=format_rooms_config(window.rooms_config),
         )
 
     def _build_record(
@@ -368,7 +397,7 @@ class PipelineRunner:
             execution_date=window.execution_date.isoformat(),
             nights=window.nights,
             rooms=window.rooms,
-            adults_per_room=str(list(window.rooms_config)),
+            adults_per_room=format_rooms_config(window.rooms_config),
 
             nuitee_display_price=tunnel.display_price or hotel.display_price,
             nuitee_final_price=tunnel.final_price,

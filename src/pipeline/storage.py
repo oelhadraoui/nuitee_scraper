@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS price_records (
     horizon_offset_days   INTEGER DEFAULT 0,
     execution_date        TEXT NOT NULL,
     rooms                 INTEGER DEFAULT 1,
-    adults_per_room       TEXT DEFAULT '[2]',
+    adults_per_room       TEXT DEFAULT '2',
 
     nuitee_display_price  REAL,
     nuitee_final_price    REAL,

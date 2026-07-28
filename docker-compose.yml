@@ -57,32 +57,32 @@ x-scraper-base: &scraper-base
       max-file: "5"
 
 services:
-  # -- default: both horizons, 3-month rolling window ---------------------
+  # -- default: both offsets (short + long), both stay durations ----------
   scraper:
     <<: *scraper-base
     container_name: nuitee_scraper
-    command: ["run", "--horizon", "all", "--months", "3"]
+    command: ["run", "--only-offset", "all"]
 
-  # -- Horizon 1: J+3 ------------------------------------------------------
-  horizon-3d:
+  # -- short offset only (~1 week out) --------------------------------------
+  offset-short:
     <<: *scraper-base
-    container_name: nuitee_horizon_3d
-    profiles: ["horizons"]
-    command: ["run", "--horizon", "3", "--months", "3", "--run-id", "h3"]
+    container_name: nuitee_offset_short
+    profiles: ["offsets"]
+    command: ["run", "--only-offset", "short", "--run-id", "short"]
 
-  # -- Horizon 2: J+7 ------------------------------------------------------
-  horizon-7d:
+  # -- long offset only (~3 months out) -------------------------------------
+  offset-long:
     <<: *scraper-base
-    container_name: nuitee_horizon_7d
-    profiles: ["horizons"]
-    command: ["run", "--horizon", "7", "--months", "3", "--run-id", "h7"]
+    container_name: nuitee_offset_long
+    profiles: ["offsets"]
+    command: ["run", "--only-offset", "long", "--run-id", "long"]
 
-  # -- 2-month fallback window --------------------------------------------
+  # -- long offset forced to its 2-month fallback --------------------------
   fallback-2m:
     <<: *scraper-base
     container_name: nuitee_fallback_2m
-    profiles: ["horizons"]
-    command: ["run", "--horizon", "all", "--months", "2"]
+    profiles: ["offsets"]
+    command: ["run", "--only-offset", "long"]
 
   # -- verification / repair pass ------------------------------------------
   verify:

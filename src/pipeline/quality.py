@@ -80,8 +80,9 @@ class QualityReport:
     by_horizon: dict[str, dict[str, Any]] = field(default_factory=dict)
     by_city: dict[str, dict[str, Any]] = field(default_factory=dict)
 
-    #: The client's second acceptance criterion: clean-hotel count for every
-    #: (city x horizon) crossing, keyed ``"City|Horizon"``.
+    #: The second acceptance criterion: clean-hotel count for every
+    #: (offset x stay-duration) crossing, summed across every city, keyed
+    #: ``"Offset|Nnights"`` (e.g. ``"3M|10n"``).
     by_crossing: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     price_stats: dict[str, Any] = field(default_factory=dict)
@@ -172,7 +173,7 @@ class QualityReport:
         )
 
         if self.by_crossing:
-            lines += ["", "  By crossing (city x horizon):"]
+            lines += ["", "  By crossing (offset x stay-duration):"]
             for label, stats in sorted(self.by_crossing.items()):
                 clean = stats.get("clean", 0)
                 ok = clean >= self.min_clean_hotels_per_crossing
@@ -378,23 +379,23 @@ class QualityGate:
                 "avg_price_difference": _round(row["avg_diff"]),
             }
 
-        # -- per-crossing (city x horizon) - the client's second acceptance
-        # criterion: "chaque croisement de 2 variables doit contenir un
-        # minimum de 200 hotels" -----------------------------------------------
+        # -- per-crossing (offset x stay-duration), summed across every city -
+        # the second acceptance criterion: each crossing of the two analysis
+        # variables must contain a minimum number of clean hotels ----------------
         crossing_rows = await store.aggregate(
-            f"SELECT city, horizon_label, COUNT(*) AS rows_n, "
+            f"SELECT horizon_label, nights, COUNT(*) AS rows_n, "
             f"SUM(CASE WHEN is_clean=1 THEN 1 ELSE 0 END) AS clean_n, "
             f"COUNT(DISTINCT CASE WHEN is_clean=1 "
             f"     THEN hotel_name_normalised || '|' || city END) AS hotels_n "
-            f"FROM price_records {scope} GROUP BY city, horizon_label "
-            f"ORDER BY city, horizon_label",
+            f"FROM price_records {scope} GROUP BY horizon_label, nights "
+            f"ORDER BY horizon_label, nights",
             params,
         )
         for row in crossing_rows:
-            label = f"{row['city'] or '?'}|{row['horizon_label'] or '?'}"
+            label = f"{row['horizon_label'] or '?'}|{row['nights']}n"
             report.by_crossing[label] = {
-                "city": row["city"] or "?",
                 "horizon_label": row["horizon_label"] or "?",
+                "nights": int(row["nights"] or 0),
                 "rows": int(row["rows_n"] or 0),
                 "clean": int(row["clean_n"] or 0),
                 "distinct_hotels": int(row["hotels_n"] or 0),

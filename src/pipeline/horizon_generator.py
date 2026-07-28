@@ -1,47 +1,44 @@
 """
 src/pipeline/horizon_generator.py
 =============================================================================
-Generation of the rolling multi-window analysis plan (Requirement C).
+Generation of the analysis plan: two offsets from today, each tested at two
+stay durations.
 
 The concept
 -----------
-The client wants price competitiveness measured at two BOOKING LEAD TIMES,
-not at two fixed dates:
+Competitiveness is measured from a single reference date - "today", call it
+T - at two different "how far ahead is this booking" offsets:
 
-    Horizon 1 (J+3) - a traveller booking three days before check-in
-    Horizon 2 (J+7) - a traveller booking one week before check-in
+    Offset "short" - a traveller booking about a week out.
+    Offset "long"  - a traveller booking a few months out (with its own
+                     fallback to a nearer month if that offset's own results
+                     turn out too thin - see ``should_fallback_long_offset``).
 
-A single pair of dates would only tell you about one week of the calendar. So
-each horizon is swept across a rolling execution window: we simulate "the day
-of scraping" advancing day by day across 2-3 months, and for each simulated
-execution date D we derive:
+Both offsets are tested at BOTH of two stay lengths (a short 3-night stay and
+a longer 10-night stay), so every city produces exactly
+``2 offsets x 2 durations = 4`` search windows - not a sweep of many
+simulated scraping dates. This keeps the plan's size proportional to the
+number of cities and durations only, which is what actually makes a full run
+finish in a practical amount of time.
 
-    check-in  = D + offset          (offset = 3 or 7)
-    check-out = check-in + nights
-
-Concretely, with a 3-month window starting 2026-07-27:
-
-    execution 2026-07-27, J+3 -> stay 2026-07-30 -> 2026-07-31
-    execution 2026-07-28, J+3 -> stay 2026-07-31 -> 2026-08-01
-    ...
-    execution 2026-10-26, J+7 -> stay 2026-11-02 -> 2026-11-03
-
-Every (execution date x horizon x city) triple becomes one SearchWindow.
+    checkin(short) = T + HORIZON_SHORT_OFFSET_DAYS
+    checkin(long)  = T + HORIZON_LONG_OFFSET_MONTHS months
+                     (or HORIZON_LONG_OFFSET_FALLBACK_MONTHS, see below)
+    checkout       = checkin + duration_nights
 
 Fallback
 --------
-Requirement C specifies a 2-3 month window with a fallback to 2 months when
-inventory or availability is insufficient. ``plan_with_fallback`` implements
-this as a measured decision, not a guess: it runs the 3-month plan, counts
-clean rows, and if the yield per window falls below
-``HORIZON_MIN_ROWS_PER_WINDOW`` it regenerates a denser 2-month plan (which
-concentrates the same effort on nearer, better-stocked dates).
+The long offset can turn out to have poor availability that far ahead. Rather
+than guess, the pipeline runs the long offset for real, measures the clean
+yield, and - only if that yield is too thin - re-runs just the long-offset
+windows at the nearer fallback offset instead. The short offset's windows are
+never affected by this decision.
 """
 
 from __future__ import annotations
 
 from calendar import monthrange
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Iterable, Iterator, Optional, Sequence
 
@@ -52,11 +49,10 @@ from src.utils.logging_setup import get_logger
 log = get_logger(__name__)
 
 __all__ = [
-    "Horizon",
     "HorizonGenerator",
     "HorizonPlan",
+    "OffsetSpec",
     "add_months",
-    "horizon_label",
 ]
 
 
@@ -78,9 +74,15 @@ def add_months(start: date, months: int) -> date:
     return date(year, month, day)
 
 
-def horizon_label(offset_days: int) -> str:
-    """Canonical label for a lead time: 3 -> ``'J+3'``."""
-    return f"J+{offset_days}"
+def _label_for_days(days: int) -> str:
+    """``7`` -> ``"1W"``; anything not an exact number of weeks -> ``"{n}D"``."""
+    if days > 0 and days % 7 == 0:
+        return f"{days // 7}W"
+    return f"{days}D"
+
+
+def _label_for_months(months: int) -> str:
+    return f"{months}M"
 
 
 # ---------------------------------------------------------------------------
@@ -88,20 +90,12 @@ def horizon_label(offset_days: int) -> str:
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True, slots=True)
-class Horizon:
-    """One booking lead time."""
+class OffsetSpec:
+    """One resolved 'how far ahead of today' offset."""
 
-    offset_days: int
-    nights: int = 1
-
-    @property
-    def label(self) -> str:
-        return horizon_label(self.offset_days)
-
-    def stay_for(self, execution_date: date) -> tuple[date, date]:
-        """(check-in, check-out) for a given simulated scraping date."""
-        checkin = execution_date + timedelta(days=self.offset_days)
-        return checkin, checkin + timedelta(days=self.nights)
+    label: str            # "1W", "3M", "2M", ...
+    kind: str              # "short" | "long"
+    checkin: date          # resolved against a specific reference date
 
 
 @dataclass(slots=True)
@@ -109,11 +103,10 @@ class HorizonPlan:
     """A fully-materialised execution plan."""
 
     windows: list[SearchWindow]
-    months: int
-    start_date: date
-    end_date: date
-    horizons: list[Horizon]
+    reference_date: date
     cities: list[str]
+    offset_labels: list[str] = field(default_factory=list)
+    durations_nights: list[int] = field(default_factory=list)
     is_fallback: bool = False
 
     def __len__(self) -> int:
@@ -132,13 +125,10 @@ class HorizonPlan:
     def summary(self) -> dict:
         return {
             "total_windows": len(self.windows),
-            "months": self.months,
-            "start_date": self.start_date.isoformat(),
-            "end_date": self.end_date.isoformat(),
-            "horizons": [h.label for h in self.horizons],
+            "reference_date": self.reference_date.isoformat(),
+            "offsets": self.offset_labels,
+            "stay_durations_nights": self.durations_nights,
             "cities": len(self.cities),
-            "execution_dates": len({w.execution_date for w in self.windows}),
-            "distinct_checkins": len({w.checkin for w in self.windows}),
             "is_fallback": self.is_fallback,
         }
 
@@ -146,9 +136,11 @@ class HorizonPlan:
         info = self.summary()
         return (
             f"{info['total_windows']} windows | "
-            f"{info['cities']} cities x {len(info['horizons'])} horizons x "
-            f"{info['execution_dates']} execution dates | "
-            f"{info['start_date']} -> {info['end_date']}"
+            f"{info['cities']} cities x {len(self.offset_labels)} offsets "
+            f"({', '.join(self.offset_labels)}) x "
+            f"{len(self.durations_nights)} durations "
+            f"({', '.join(f'{n}n' for n in self.durations_nights)}) | "
+            f"as of {info['reference_date']}"
             f"{' (FALLBACK)' if self.is_fallback else ''}"
         )
 
@@ -163,151 +155,138 @@ class HorizonGenerator:
     def __init__(self, settings: HorizonSettings) -> None:
         self.settings = settings
 
-    # -- horizons -----------------------------------------------------------
+    # -- offsets --------------------------------------------------------------
 
-    def horizons(self, only: Optional[Sequence[int]] = None) -> list[Horizon]:
-        """Configured horizons, optionally filtered to specific offsets."""
-        offsets = list(only) if only else list(self.settings.offsets_days)
-        unknown = [o for o in offsets if o not in self.settings.offsets_days and only]
-        if unknown:
-            log.warning("horizon offsets %s are not in the configured set", unknown)
-        return [Horizon(offset_days=o, nights=self.settings.nights) for o in offsets]
-
-    # -- execution dates ----------------------------------------------------
-
-    def execution_dates(
+    def offsets(
         self,
-        start: Optional[date] = None,
-        months: Optional[int] = None,
-    ) -> list[date]:
+        reference_date: date,
+        *,
+        use_fallback_long_offset: bool = False,
+        only: Optional[str] = None,
+    ) -> list[OffsetSpec]:
         """
-        The simulated scraping dates across the rolling window.
+        Resolve the configured offset(s) against ``reference_date``.
 
-        Sampled every ``step_days``; the window end is always included so the
-        far edge of the analysis period is never silently dropped.
+        ``only`` restricts to a single offset kind ("short" or "long") -
+        used when re-running just the long offset at its fallback duration
+        without re-running the short offset too.
         """
-        start = start or date.today()
-        months = months or self.settings.months
-        end = add_months(start, months)
-        step = max(1, self.settings.step_days)
+        specs: list[OffsetSpec] = []
 
-        dates: list[date] = []
-        cursor = start
-        while cursor < end:
-            dates.append(cursor)
-            cursor += timedelta(days=step)
+        if only in (None, "short"):
+            days = self.settings.short_offset_days
+            specs.append(
+                OffsetSpec(
+                    label=_label_for_days(days),
+                    kind="short",
+                    checkin=reference_date + timedelta(days=days),
+                )
+            )
 
-        last = end - timedelta(days=1)
-        if dates and dates[-1] != last and last > dates[-1]:
-            dates.append(last)
+        if only in (None, "long"):
+            months = (
+                self.settings.long_offset_fallback_months
+                if use_fallback_long_offset
+                else self.settings.long_offset_months
+            )
+            specs.append(
+                OffsetSpec(
+                    label=_label_for_months(months),
+                    kind="long",
+                    checkin=add_months(reference_date, months),
+                )
+            )
 
-        return dates
+        return specs
 
-    # -- plans --------------------------------------------------------------
+    # -- plans ------------------------------------------------------------------
 
     def build_plan(
         self,
         cities: Iterable[str],
         *,
-        start: Optional[date] = None,
-        months: Optional[int] = None,
-        offsets: Optional[Sequence[int]] = None,
+        reference_date: Optional[date] = None,
+        use_fallback_long_offset: bool = False,
+        only: Optional[str] = None,
+        durations: Optional[Sequence[int]] = None,
         rooms_config: Sequence[int] = (2,),
-        is_fallback: bool = False,
     ) -> HorizonPlan:
         """
-        Materialise the full cartesian plan:
-        ``cities x horizons x execution dates``.
+        Materialise the full plan: ``cities x offsets x durations``.
 
-        Ordered execution-date-major so that a partial run still covers every
-        city and both horizons for the dates it did reach - a run killed
-        halfway is then still analysable, rather than being all-Paris.
+        Ordered offset-major, then duration, then city, so a partial run
+        still covers every city for the offset/duration pairs it reached.
         """
         city_list = [c.strip() for c in cities if c and c.strip()]
         if not city_list:
             raise ValueError("build_plan requires at least one city")
 
-        start = start or date.today()
-        months = months or self.settings.months
-        horizon_list = self.horizons(offsets)
-        exec_dates = self.execution_dates(start=start, months=months)
+        reference_date = reference_date or date.today()
+        duration_list = tuple(
+            int(d) for d in (durations or self.settings.stay_durations_nights)
+        )
+        if not duration_list:
+            raise ValueError("build_plan requires at least one stay duration")
+
         rooms = tuple(int(r) for r in rooms_config)
+        offset_specs = self.offsets(
+            reference_date,
+            use_fallback_long_offset=use_fallback_long_offset,
+            only=only,
+        )
 
         windows: list[SearchWindow] = []
-        for execution_date in exec_dates:
-            for horizon in horizon_list:
-                checkin, checkout = horizon.stay_for(execution_date)
+        for offset in offset_specs:
+            offset_days = (offset.checkin - reference_date).days
+            for nights in duration_list:
+                checkout = offset.checkin + timedelta(days=nights)
                 for city in city_list:
                     windows.append(
                         SearchWindow(
                             city=city,
-                            checkin=checkin,
+                            checkin=offset.checkin,
                             checkout=checkout,
-                            horizon_label=horizon.label,
-                            horizon_offset_days=horizon.offset_days,
-                            execution_date=execution_date,
+                            horizon_label=offset.label,
+                            horizon_offset_days=offset_days,
+                            execution_date=reference_date,
                             rooms_config=rooms,
                         )
                     )
 
         plan = HorizonPlan(
             windows=windows,
-            months=months,
-            start_date=start,
-            end_date=add_months(start, months),
-            horizons=horizon_list,
+            reference_date=reference_date,
             cities=city_list,
-            is_fallback=is_fallback,
+            offset_labels=[o.label for o in offset_specs],
+            durations_nights=list(duration_list),
+            is_fallback=use_fallback_long_offset,
         )
-        log.info("Horizon plan: %s", plan.describe())
+        log.info("Analysis plan: %s", plan.describe())
         return plan
-
-    def build_fallback_plan(
-        self,
-        cities: Iterable[str],
-        *,
-        start: Optional[date] = None,
-        offsets: Optional[Sequence[int]] = None,
-        rooms_config: Sequence[int] = (2,),
-    ) -> HorizonPlan:
-        """
-        The denser 2-month plan used when the 3-month sweep under-delivers.
-
-        Same total effort, concentrated on nearer dates where inventory is
-        reliably present.
-        """
-        log.warning(
-            "Falling back to a %d-month window (from %d)",
-            self.settings.fallback_months, self.settings.months,
-        )
-        return self.build_plan(
-            cities,
-            start=start,
-            months=self.settings.fallback_months,
-            offsets=offsets,
-            rooms_config=rooms_config,
-            is_fallback=True,
-        )
 
     # -- fallback decision --------------------------------------------------
 
-    def should_fallback(self, clean_rows: int, windows_executed: int) -> bool:
+    def should_fallback_long_offset(
+        self, long_offset_clean_rows: int, long_offset_windows: int
+    ) -> bool:
         """
-        Decide whether the wide window under-delivered.
+        Decide whether the long offset under-delivered.
 
-        Compares realised clean rows per executed window against
-        ``min_rows_per_window``. Requires a meaningful sample (>= 5 windows)
-        so a run that failed for infrastructure reasons is not misdiagnosed as
-        an inventory problem.
+        Compares realised clean rows per long-offset window against
+        ``min_rows_per_offset``. Requires a meaningful sample (>= 3 windows -
+        i.e. at least a couple of city/duration combinations) so a run that
+        failed for infrastructure reasons is not misdiagnosed as an inventory
+        problem.
         """
-        if windows_executed < 5:
+        if long_offset_windows < 3:
             return False
-        yield_per_window = clean_rows / windows_executed
-        decision = yield_per_window < self.settings.min_rows_per_window
+        yield_per_window = long_offset_clean_rows / long_offset_windows
+        decision = yield_per_window < self.settings.min_rows_per_offset
         log.info(
-            "Fallback check: %.1f clean rows/window vs threshold %d -> %s",
+            "Long-offset fallback check: %.1f clean rows/window vs "
+            "threshold %d -> %s",
             yield_per_window,
-            self.settings.min_rows_per_window,
+            self.settings.min_rows_per_offset,
             "FALLBACK" if decision else "continue",
         )
         return decision
@@ -321,17 +300,17 @@ def plan_from_city_entries(
     entries: Sequence[dict],
     settings: HorizonSettings,
     *,
-    start: Optional[date] = None,
-    months: Optional[int] = None,
-    offsets: Optional[Sequence[int]] = None,
+    reference_date: Optional[date] = None,
+    only: Optional[str] = None,
+    durations: Optional[Sequence[int]] = None,
 ) -> HorizonPlan:
     """
     Build a plan from ``input.json`` entries.
 
     Accepts both the legacy shape (``{"city", "checkin", "checkout"}``) and
-    the new horizon-driven shape (``{"city", "rooms_config"}``). Legacy
-    ``checkin``/``checkout`` values are ignored on purpose: dates are now
-    derived from the horizon, which is the whole point of Requirement C.
+    the current shape (``{"city", "rooms_config"}``). Legacy
+    ``checkin``/``checkout`` values are ignored on purpose: dates are always
+    derived from today plus the configured offsets.
     """
     generator = HorizonGenerator(settings)
 
@@ -355,8 +334,8 @@ def plan_from_city_entries(
 
     return generator.build_plan(
         cities,
-        start=start,
-        months=months,
-        offsets=offsets,
+        reference_date=reference_date,
+        only=only,
+        durations=durations,
         rooms_config=rooms_config,
     )

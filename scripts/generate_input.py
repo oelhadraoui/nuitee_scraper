@@ -5,9 +5,10 @@ scripts/generate_input.py
 Generate ``input.json`` for the horizon-driven pipeline.
 
 The new input format lists CITIES ONLY. Check-in / check-out dates are no
-longer stored in the file - they are derived at runtime from the horizon
-(J+3 / J+7) and the rolling execution window, which is the whole point of
-Requirement C. Hard-coding dates in the input would defeat it.
+longer stored in the file - they are derived at runtime from today's date
+plus the configured offsets (a short ~1-week-out offset and a long
+~3-months-out offset, each tested at a couple of stay durations). Hard-coding
+dates in the input would defeat the point of always measuring "as of today".
 
     {
       "version": 2,
@@ -23,7 +24,7 @@ Usage
     python scripts/generate_input.py                       # default set
     python scripts/generate_input.py --preset morocco
     python scripts/generate_input.py --cities "Paris,Rome" --adults 2 --rooms 1
-    python scripts/generate_input.py --preview-plan --months 3
+    python scripts/generate_input.py --preview-plan --durations 3,10
 """
 
 from __future__ import annotations
@@ -84,14 +85,19 @@ def build_city_list(presets: list[str], extra: list[str]) -> list[str]:
 
 
 def estimate_volume(
-    n_cities: int, months: int, step_days: int, horizons: int, hotels_per_city: int
+    n_cities: int, n_durations: int, hotels_per_city: int, n_offsets: int = 2
 ) -> dict[str, int]:
-    """Rough volume projection, so you can size the run before starting it."""
-    execution_dates = max(1, (months * 30) // max(1, step_days))
-    windows = n_cities * horizons * execution_dates
+    """
+    Rough volume projection, so you can size the run before starting it.
+
+    Every city produces ``n_offsets x n_durations`` search windows (offsets
+    from today, e.g. short ~1 week and long ~3 months; durations, e.g. 3 and
+    10 nights) - not a sweep of simulated scraping dates, so the count stays
+    small and predictable regardless of how wide the offsets are.
+    """
+    windows = n_cities * n_offsets * n_durations
     rows = windows * hotels_per_city
     return {
-        "execution_dates": execution_dates,
         "windows": windows,
         "max_rows": rows,
         # ~45% of harvested hotels typically survive the clean gate once
@@ -120,8 +126,10 @@ def main() -> None:
         "--preview-plan", action="store_true",
         help="Print a volume projection instead of just writing the file",
     )
-    parser.add_argument("--months", type=int, default=3)
-    parser.add_argument("--step-days", type=int, default=1)
+    parser.add_argument(
+        "--durations", default="3,10",
+        help="Comma-separated stay lengths in nights, for the volume preview only",
+    )
     parser.add_argument("--hotels-per-city", type=int, default=25)
     args = parser.parse_args()
 
@@ -150,8 +158,9 @@ def main() -> None:
             "version": 2,
             "generated_at": date.today().isoformat(),
             "note": (
-                "Dates are derived at runtime from the horizon (J+3 / J+7) "
-                "and the rolling execution window. Do not hard-code them here."
+                "Dates are derived at runtime from today's date plus the "
+                "configured offsets (short ~1 week, long ~3 months). "
+                "Do not hard-code them here."
             ),
             "rooms_config": rooms_config,
             "cities": cities,
@@ -164,22 +173,20 @@ def main() -> None:
     print(f"Wrote {len(cities)} cities to {args.output}")
 
     if args.preview_plan:
-        estimate = estimate_volume(
-            len(cities), args.months, args.step_days, 2, args.hotels_per_city
-        )
+        durations = [int(d.strip()) for d in args.durations.split(",") if d.strip()]
+        estimate = estimate_volume(len(cities), len(durations), args.hotels_per_city)
         print("\nVolume projection")
         print("-" * 48)
         print(f"  cities              : {len(cities)}")
-        print("  horizons            : 2 (J+3, J+7)")
-        print(f"  months / step       : {args.months} / {args.step_days}d")
-        print(f"  execution dates     : {estimate['execution_dates']}")
+        print("  offsets             : 2 (short ~1 week, long ~3 months)")
+        print(f"  stay durations      : {durations}")
         print(f"  search windows      : {estimate['windows']:,}")
         print(f"  max rows            : {estimate['max_rows']:,}")
         print(f"  expected clean rows : ~{estimate['expected_clean_rows']:,}")
         print("-" * 48)
         if estimate["expected_clean_rows"] < 1_000:
             print("  WARNING: projection is below the 1,000 clean-hotel target.")
-            print("  Increase --hotels-per-city, add cities, or reduce --step-days.\n")
+            print("  Increase --hotels-per-city or add more cities.\n")
         else:
             print("  Projection clears the 1,000 clean-hotel target.\n")
 

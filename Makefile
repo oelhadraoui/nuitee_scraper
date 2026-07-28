@@ -13,15 +13,17 @@ PYTHON       := python3
 export UID   := $(shell id -u)
 export GID   := $(shell id -g)
 
-# Tunables, overridable on the command line:  make run-full-pipeline MONTHS=2
-MONTHS       ?= 3
-HORIZON      ?= all
+# Tunables, overridable on the command line:  make run-full-pipeline OFFSET=short
+OFFSET       ?= all
+DURATIONS    ?=
 CITIES       ?=
 LIMIT        ?=
 TARGET       ?= 1000
-STEP_DAYS    ?= 1
 
-CLI_ARGS      = --horizon $(HORIZON) --months $(MONTHS) --step-days $(STEP_DAYS)
+CLI_ARGS      = --only-offset $(OFFSET)
+ifneq ($(strip $(DURATIONS)),)
+CLI_ARGS     += --durations "$(DURATIONS)"
+endif
 ifneq ($(strip $(CITIES)),)
 CLI_ARGS     += --cities "$(CITIES)"
 endif
@@ -47,12 +49,12 @@ help:
 	@echo "    make doctor              Pre-flight check (config, selectors, DB)"
 	@echo ""
 	@echo "  PIPELINE"
-	@echo "    make run-full-pipeline   Both horizons, 3-month window, then verify"
-	@echo "    make run-horizon-3d      Horizon 1 only (J+3)"
-	@echo "    make run-horizon-7d      Horizon 2 only (J+7)"
-	@echo "    make run-fallback-2m     2-month fallback window"
+	@echo "    make run-full-pipeline   Both offsets, both durations, then verify"
+	@echo "    make run-offset-short    Short offset only (~1 week out)"
+	@echo "    make run-offset-long     Long offset only (~3 months out)"
+	@echo "    make run-fallback-2m     Force the 2-month fallback offset"
 	@echo "    make run-smoke           2 cities x 4 windows (fast sanity check)"
-	@echo "    make plan                Print the horizon plan without scraping"
+	@echo "    make plan                Print the analysis plan without scraping"
 	@echo ""
 	@echo "  QUALITY"
 	@echo "    make verify              Repair failed tunnel + Booking rows"
@@ -70,7 +72,7 @@ help:
 	@echo "  DEV"
 	@echo "    make test / lint / format"
 	@echo ""
-	@echo "  Variables: MONTHS=$(MONTHS) HORIZON=$(HORIZON) STEP_DAYS=$(STEP_DAYS)"
+	@echo "  Variables: OFFSET=$(OFFSET) DURATIONS=\"$(DURATIONS)\""
 	@echo "             CITIES=\"$(CITIES)\" LIMIT=$(LIMIT) TARGET=$(TARGET)"
 	@echo ""
 
@@ -92,7 +94,7 @@ setup:
 
 .PHONY: input
 input:
-	$(PYTHON) scripts/generate_input.py --preview-plan --months $(MONTHS) --step-days $(STEP_DAYS)
+	$(PYTHON) scripts/generate_input.py --preview-plan
 
 .PHONY: doctor
 doctor: _ensure_env _ensure_output
@@ -103,9 +105,8 @@ doctor: _ensure_env _ensure_output
 # ---------------------------------------------------------------------------
 .PHONY: run-full-pipeline
 run-full-pipeline: _ensure_env _ensure_output
-	@echo "[pipeline] 1/3 scraping both horizons over $(MONTHS) months..."
-	$(COMPOSE) run --rm $(SERVICE) run --horizon all --months $(MONTHS) \
-		--step-days $(STEP_DAYS) --target $(TARGET)
+	@echo "[pipeline] 1/3 scraping both offsets, both stay durations..."
+	$(COMPOSE) run --rm $(SERVICE) run --only-offset all --target $(TARGET)
 	@echo "[pipeline] 2/3 repairing incomplete rows..."
 	$(COMPOSE) run --rm $(SERVICE) verify --mode all
 	@echo "[pipeline] 3/3 exporting + reporting..."
@@ -113,22 +114,23 @@ run-full-pipeline: _ensure_env _ensure_output
 	$(COMPOSE) run --rm $(SERVICE) report
 	@echo "[pipeline] complete. Results in $(OUTPUT)/"
 
-.PHONY: run-horizon-3d
-run-horizon-3d: _ensure_env _ensure_output
-	@echo "[run] Horizon 1 (J+3) over $(MONTHS) months..."
-	$(COMPOSE) run --rm $(SERVICE) run --horizon 3 --months $(MONTHS) \
-		--step-days $(STEP_DAYS) --run-id h3_$(shell date +%Y%m%d)
+.PHONY: run-offset-short
+run-offset-short: _ensure_env _ensure_output
+	@echo "[run] short offset (~1 week out)..."
+	$(COMPOSE) run --rm $(SERVICE) run --only-offset short \
+		--run-id short_$(shell date +%Y%m%d)
 
-.PHONY: run-horizon-7d
-run-horizon-7d: _ensure_env _ensure_output
-	@echo "[run] Horizon 2 (J+7) over $(MONTHS) months..."
-	$(COMPOSE) run --rm $(SERVICE) run --horizon 7 --months $(MONTHS) \
-		--step-days $(STEP_DAYS) --run-id h7_$(shell date +%Y%m%d)
+.PHONY: run-offset-long
+run-offset-long: _ensure_env _ensure_output
+	@echo "[run] long offset (~3 months out)..."
+	$(COMPOSE) run --rm $(SERVICE) run --only-offset long \
+		--run-id long_$(shell date +%Y%m%d)
 
 .PHONY: run-fallback-2m
 run-fallback-2m: _ensure_env _ensure_output
-	@echo "[run] 2-month fallback window..."
-	$(COMPOSE) run --rm $(SERVICE) run --horizon all --months 2 --step-days 1
+	@echo "[run] forcing the long offset's 2-month fallback..."
+	$(COMPOSE) run --rm $(SERVICE) run --only-offset long \
+		--durations "$(DURATIONS)"
 
 .PHONY: run
 run: _ensure_env _ensure_output
@@ -138,8 +140,8 @@ run: _ensure_env _ensure_output
 run-smoke: _ensure_env _ensure_output
 	@echo "[smoke] 2 cities, 4 windows, 5 hotels each..."
 	$(COMPOSE) run --rm $(SERVICE) run \
-		--cities "Casablanca,Marrakech" --horizon all --months 1 \
-		--step-days 15 --limit-windows 4 --hotels-per-city 5 \
+		--cities "Casablanca,Marrakech" --only-offset all \
+		--limit-windows 4 --hotels-per-city 5 \
 		--run-id smoke_$(shell date +%Y%m%d_%H%M%S)
 
 .PHONY: start
@@ -149,8 +151,7 @@ start: _ensure_env _ensure_output
 
 .PHONY: plan
 plan:
-	$(PYTHON) -m src.cli plan --horizon $(HORIZON) --months $(MONTHS) \
-		--step-days $(STEP_DAYS) --dry-run
+	$(PYTHON) -m src.cli plan --only-offset $(OFFSET) --dry-run
 
 # ---------------------------------------------------------------------------
 # Quality

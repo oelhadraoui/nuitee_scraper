@@ -145,6 +145,31 @@ def _as_date(value: Any) -> date:
     return datetime.strptime(str(value), "%Y-%m-%d").date()
 
 
+def format_rooms_config(rooms_config: tuple[int, ...]) -> str:
+    """``(2,)`` -> ``"2"``; ``(2, 2)`` -> ``"2+2"`` - readable in a CSV cell."""
+    return "+".join(str(r) for r in rooms_config) or "2"
+
+
+def parse_rooms_config(text: str) -> tuple[int, ...]:
+    """
+    Inverse of :func:`format_rooms_config`.
+
+    Also accepts the legacy bracketed/comma form (``"[2, 2]"``) so old
+    exports and databases keep loading correctly.
+    """
+    cleaned = (text or "").strip().strip("[]")
+    if not cleaned:
+        return (2,)
+    separator = "+" if "+" in cleaned else ","
+    try:
+        rooms = tuple(
+            int(part.strip()) for part in cleaned.split(separator) if part.strip()
+        )
+    except ValueError:
+        return (2,)
+    return rooms or (2,)
+
+
 # ---------------------------------------------------------------------------
 # Nuitee side
 # ---------------------------------------------------------------------------
@@ -244,7 +269,7 @@ class PriceRecord:
     # --- stay config -------------------------------------------------------
     nights: int = 1
     rooms: int = 1
-    adults_per_room: str = "[2]"
+    adults_per_room: str = "2"
 
     # --- Nuitee ------------------------------------------------------------
     nuitee_display_price: Optional[float] = None
@@ -316,8 +341,13 @@ class PriceRecord:
         return data
 
 
-#: Column order for the exported CSV. ``booking_url`` stays last, matching the
-#: convention established by the original deliverable.
+#: Column order for the exported CSV - the user-facing view of a price row.
+#: A handful of internal/operational fields (``horizon_offset_days``,
+#: ``tunnel_deepest_panel``, ``run_id``, ``verified``) are tracked in the
+#: SQLite store for diagnostics but deliberately left out of the export:
+#: they're plumbing, not something a reader comparing prices needs.
+#: ``booking_url`` stays last, matching the convention established by the
+#: original deliverable.
 CSV_COLUMNS: list[str] = [
     "hotel_name",
     "city",
@@ -325,8 +355,6 @@ CSV_COLUMNS: list[str] = [
     "checkout",
     "nights",
     "horizon_label",
-    "horizon_offset_days",
-    "execution_date",
     "adults_per_room",
     "rooms",
     "nuitee_display_price",
@@ -334,7 +362,6 @@ CSV_COLUMNS: list[str] = [
     "nuitee_hidden_fees",
     "nuitee_room_label",
     "tunnel_status",
-    "tunnel_deepest_panel",
     "booking_price",
     "booking_matched_name",
     "fuzzy_score",
@@ -345,23 +372,19 @@ CSV_COLUMNS: list[str] = [
     "match_status",
     "is_clean",
     "quality_flags",
-    "verified",
     "scraped_at",
-    "run_id",
     "nuitee_url",
     "booking_url",
 ]
 
-#: Human-friendly headers for the client-facing export.
+#: Human-friendly headers for the exported CSV.
 CSV_HEADER_ALIASES: dict[str, str] = {
     "hotel_name": "Hotel Name",
     "city": "City",
     "checkin": "Check-in",
     "checkout": "Check-out",
     "nights": "Nights",
-    "horizon_label": "Horizon",
-    "horizon_offset_days": "Horizon Offset (days)",
-    "execution_date": "Execution Date",
+    "horizon_label": "Offset",
     "adults_per_room": "Adults per Room",
     "rooms": "Rooms",
     "nuitee_display_price": "Nuitee Display Price (MAD)",
@@ -369,7 +392,6 @@ CSV_HEADER_ALIASES: dict[str, str] = {
     "nuitee_hidden_fees": "Nuitee Hidden Fees (MAD)",
     "nuitee_room_label": "Nuitee Room",
     "tunnel_status": "Tunnel Status",
-    "tunnel_deepest_panel": "Deepest Panel",
     "booking_price": "Booking Price (MAD)",
     "booking_matched_name": "Booking Matched Name",
     "fuzzy_score": "Fuzzy Score",
@@ -377,12 +399,10 @@ CSV_HEADER_ALIASES: dict[str, str] = {
     "price_difference_pct": "Price Difference (%)",
     "cheaper_platform": "Cheaper Platform",
     "currency": "Currency",
-    "match_status": "match_status",
+    "match_status": "Match Status",
     "is_clean": "Clean",
     "quality_flags": "Quality Flags",
-    "verified": "Verified",
     "scraped_at": "Scraped At",
-    "run_id": "Run ID",
     "nuitee_url": "Nuitee URL",
     "booking_url": "Booking URL",
 }

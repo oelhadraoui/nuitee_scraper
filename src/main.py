@@ -8,8 +8,8 @@ Dockerfile / docker-compose / cron jobs of the existing deployment all call it
 that way. Rather than break them, this module forwards to the new CLI.
 
     python src/main.py                       -> full run with defaults
-    python src/main.py --horizon 3 --months 2
-    python src/main.py run --horizon 7
+    python src/main.py --only-offset short
+    python src/main.py run --only-offset long
     python src/main.py doctor
 
 Anything that does not start with a known subcommand is treated as arguments

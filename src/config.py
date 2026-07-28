@@ -305,50 +305,49 @@ class NuiteeSettings(BaseSettings):
 
 class HorizonSettings(BaseSettings):
     """
-    Rolling multi-window analysis configuration.
+    Analysis-plan configuration: two "how far ahead" offsets from today,
+    each tested at two stay durations.
 
-    Horizon 1 = check-in at J+3 (short term)
-    Horizon 2 = check-in at J+7 (one week out)
+    Reference date T is always *today* (the day the run starts) - there is no
+    rolling sweep of simulated past/future scraping dates. From T:
 
-    Both are swept across a rolling execution window of ``months`` months,
-    with an automatic fallback to ``fallback_months`` when inventory or
-    availability is insufficient.
+        Offset "short" : T + ``short_offset_days``          (default 1 week)
+        Offset "long"  : T + ``long_offset_months``          (default 3 months),
+                         falling back to ``long_offset_fallback_months``
+                         (default 2 months) if the long offset's own results
+                         turn out to be too thin.
+
+    Both offsets are tested at both stay durations in ``stay_durations_nights``
+    (default 3 nights and 10 nights) - so a run against N cities produces
+    ``2 offsets x 2 durations x N cities`` search windows, not the far larger
+    daily/weekly sweep an earlier version of this pipeline used.
     """
 
     model_config = SettingsConfigDict(env_prefix="HORIZON_", extra="ignore")
 
-    offsets_days: CsvIntList = Field(default_factory=lambda: [3, 7])
-    months: int = Field(default=3, ge=1, le=12)
-    fallback_months: int = Field(default=2, ge=1, le=12)
+    #: The short "how far ahead" offset, in days from today. Labelled "1W"
+    #: when it's an exact number of weeks, else "{n}D".
+    short_offset_days: int = Field(default=7, ge=1, le=90)
 
-    #: Nights per stay (check-out = check-in + nights).
-    nights: int = Field(default=1, ge=1, le=30)
+    #: The long "how far ahead" offset, in months from today. Labelled "{n}M".
+    long_offset_months: int = Field(default=3, ge=1, le=12)
 
-    #: Sample every N days inside the window (1 = every day, 7 = weekly).
-    #:
-    #: Daily sampling over a 3-month window produces ~92 execution dates; at
-    #: 2 horizons x 1 city that is already 184 windows, and every window costs
-    #: several minutes (harvest + per-hotel checkout tunnel + Booking lookup).
-    #: A live run at the daily default took ~20 minutes for 2 windows -
-    #: multi-day for a full plan, and nowhere near what "repeat the analysis
-    #: over a 2-3 month window" requires: the client asked for the horizon
-    #: comparison to hold across that whole window, not for literally every
-    #: calendar day inside it to be scraped. Weekly sampling still spans the
-    #: full window (about 13 execution dates per month) at a runtime that
-    #: actually finishes.
-    step_days: int = Field(default=7, ge=1, le=30)
+    #: Used instead of ``long_offset_months`` when the long offset's results
+    #: are insufficient (see ``HorizonGenerator.should_fallback_long_offset``).
+    long_offset_fallback_months: int = Field(default=2, ge=1, le=12)
 
-    #: Minimum clean rows a window must yield before the fallback kicks in.
-    #: Must be achievable given ``NUITEE_HOTELS_PER_CITY`` (a window can never
-    #: yield more clean rows than hotels it harvested) - the previous default
-    #: of 50 was higher than the 25-hotel-per-city ceiling, so the fallback
-    #: condition was unsatisfiable-early-exit's opposite: it fired on nearly
-    #: every run regardless of real inventory.
-    min_rows_per_window: int = Field(default=10, ge=0)
+    #: Stay lengths (nights) tested at BOTH offsets.
+    stay_durations_nights: CsvIntList = Field(default_factory=lambda: [3, 10])
 
-    @field_validator("offsets_days", mode="before")
+    #: Minimum clean rows the long-offset windows must yield, per window,
+    #: before the fallback to ``long_offset_fallback_months`` kicks in. Must
+    #: stay achievable given ``NUITEE_HOTELS_PER_CITY`` - a window can never
+    #: yield more clean rows than hotels it harvested.
+    min_rows_per_offset: int = Field(default=10, ge=0)
+
+    @field_validator("stay_durations_nights", mode="before")
     @classmethod
-    def _parse_offsets(cls, value: Any) -> Any:
+    def _parse_durations(cls, value: Any) -> Any:
         if isinstance(value, str):
             if value.strip().startswith("["):
                 return json.loads(value)
@@ -358,13 +357,16 @@ class HorizonSettings(BaseSettings):
     @model_validator(mode="after")
     def _check_fallback(self) -> "HorizonSettings":
         """
-        The fallback window can never be wider than the primary window.
+        The fallback offset can never be *further out* than the primary one.
 
-        Clamped rather than rejected: a user who sets ``HORIZON_MONTHS=1`` for
-        a quick run should get a 1-month fallback, not a start-up crash.
+        Clamped rather than rejected: a user who sets
+        ``HORIZON_LONG_OFFSET_MONTHS=1`` for a quick run should get a
+        1-month fallback, not a start-up crash.
         """
-        if self.fallback_months > self.months:
-            object.__setattr__(self, "fallback_months", self.months)
+        if self.long_offset_fallback_months > self.long_offset_months:
+            object.__setattr__(
+                self, "long_offset_fallback_months", self.long_offset_months
+            )
         return self
 
 
@@ -374,7 +376,7 @@ class HorizonSettings(BaseSettings):
 
 class QualitySettings(BaseSettings):
     """
-    The client-facing acceptance criteria (Requirement B).
+    The data-quality acceptance criteria.
 
     A row is "clean" when ALL of the following hold:
       * hotel matched on Booking.com (status OK)
@@ -388,11 +390,12 @@ class QualitySettings(BaseSettings):
 
     target_clean_hotels: int = Field(default=1_000, ge=1)
 
-    #: The client's second acceptance criterion: every crossing of the two
-    #: analysis variables (city x horizon) must independently reach this many
-    #: clean hotels - hitting 1,000 clean rows all from one city/horizon pair
-    #: would satisfy ``target_clean_hotels`` but not be a statistically sound
-    #: sample across the comparison the client actually asked for.
+    #: The second acceptance criterion: every crossing of the two analysis
+    #: variables (offset x stay-duration, e.g. "3M x 10 nights") must
+    #: independently reach this many clean hotels, summed across every city -
+    #: hitting the global target entirely from one offset/duration pair would
+    #: satisfy ``target_clean_hotels`` but not be a statistically sound sample
+    #: across the comparison the analysis is meant to support.
     min_clean_hotels_per_crossing: int = Field(default=200, ge=1)
 
     min_price_mad: float = Field(default=150.0, ge=0.0)

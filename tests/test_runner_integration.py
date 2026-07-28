@@ -98,12 +98,12 @@ class FakeBooking:
 
 @pytest.fixture
 def plan():
-    generator = HorizonGenerator(
-        Settings().horizon.model_copy(update={"step_days": 30})
+    """Two windows for one city: the short offset and the long offset,
+    both at the same 3-night stay - i.e. two distinct crossings."""
+    generator = HorizonGenerator(Settings().horizon)
+    return generator.build_plan(
+        ["Casablanca"], reference_date=date(2026, 7, 27), durations=[3]
     )
-    p = generator.build_plan(["Casablanca"], start=date(2026, 7, 27), months=1)
-    p.windows = p.windows[:2]
-    return p
 
 
 class TestOrchestration:
@@ -171,19 +171,20 @@ class TestOrchestration:
         assert len(booking.queried) == first_pass
 
     async def test_early_exit_once_target_is_met(self, settings) -> None:
-        # Both windows share the SAME crossing (city + horizon), only the
-        # execution date differs - isolates the global-target behaviour from
-        # the per-crossing check, which is covered separately below.
-        generator = HorizonGenerator(
-            Settings().horizon.model_copy(update={"step_days": 30})
-        )
+        # Both windows share the SAME crossing (offset + stay-duration), only
+        # the city differs - isolates the global-target behaviour from the
+        # per-crossing check, which is covered separately below.
+        generator = HorizonGenerator(Settings().horizon)
         single_crossing_plan = generator.build_plan(
-            ["Casablanca"], start=date(2026, 7, 27), months=2, offsets=[3]
+            ["Casablanca", "Rabat"],
+            reference_date=date(2026, 7, 27),
+            only="short",
+            durations=[3],
         )
-        assert len(single_crossing_plan.windows) >= 2
+        assert len(single_crossing_plan.windows) == 2
         assert {
-            (w.city, w.horizon_label) for w in single_crossing_plan.windows
-        } == {("Casablanca", "J+3")}
+            (w.horizon_label, w.nights) for w in single_crossing_plan.windows
+        } == {("1W", 3)}
 
         settings.quality.target_clean_hotels = 2
         settings.quality.min_clean_hotels_per_crossing = 1
@@ -202,10 +203,10 @@ class TestOrchestration:
         self, settings, plan
     ) -> None:
         """
-        plan.windows[0] and [1] are the SAME city but DIFFERENT horizons
-        (J+3 then J+7) - two distinct crossings. Hitting the global target
+        plan.windows[0] and [1] are the SAME city but DIFFERENT offsets
+        (short then long) - two distinct crossings. Hitting the global target
         after window 1 must not skip window 2, because window 2's crossing
-        (Casablanca / J+7) still has zero clean hotels against a real
+        (long offset x 3 nights) still has zero clean hotels against a real
         per-crossing minimum.
         """
         settings.quality.target_clean_hotels = 2
@@ -239,25 +240,25 @@ class TestOrchestration:
         assert "Hotel Alpha" in body and "Hotel Gamma" not in body
         assert body.splitlines()[0].split(",")[-1] == "Booking URL"
 
-    async def test_by_crossing_report_tracks_each_city_horizon_pair(
+    async def test_by_crossing_report_tracks_each_offset_duration_pair(
         self, settings, plan
     ) -> None:
         """
-        The client's second acceptance criterion (>= 200 clean hotels per
-        city x horizon crossing) needs the report to actually break the
-        numbers out that way, not just globally and per-horizon.
+        The second acceptance criterion (>= 200 clean hotels per offset x
+        stay-duration crossing, summed across every city) needs the report to
+        actually break the numbers out that way, not just globally.
         """
         runner = PipelineRunner(settings, run_id="itest7")
         nuitee, booking = FakeNuitee(), FakeBooking()
 
         await runner.store.start_run(plan.summary())
-        for window in plan.windows:  # Casablanca/J+3 and Casablanca/J+7
+        for window in plan.windows:  # short-offset/3n and long-offset/3n
             await runner._execute_window(window, nuitee, booking)
         await runner.store.flush()
 
         report = await QualityGate(settings).build_report(runner.store)
 
-        assert set(report.by_crossing) == {"Casablanca|J+3", "Casablanca|J+7"}
+        assert set(report.by_crossing) == {"1W|3n", "3M|3n"}
         for stats in report.by_crossing.values():
             assert stats["clean"] == 2  # Alpha + Beta clean per window
 
@@ -277,7 +278,7 @@ class TestOrchestration:
         await runner.store.flush()
 
         rows = await runner.store.fetch()
-        assert {r["horizon_label"] for r in rows} == {"J+3", "J+7"}
+        assert {r["horizon_label"] for r in rows} == {"1W", "3M"}
         for row in rows:
             offset = (
                 date.fromisoformat(row["checkin"])

@@ -6,8 +6,8 @@ Command-line interface.
 Built on argparse rather than click so the package has one fewer runtime
 dependency inside the Docker image; the subcommand structure is identical.
 
-    python -m src.cli run      --horizon 3 --months 3
-    python -m src.cli plan     --months 2 --dry-run
+    python -m src.cli run      --only-offset all
+    python -m src.cli plan     --dry-run
     python -m src.cli verify   --mode tunnel
     python -m src.cli report
     python -m src.cli export   --clean-only
@@ -53,8 +53,8 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  python -m src.cli run --horizon 3 --months 3\n"
-            "  python -m src.cli run --horizon all --months 2 --limit-windows 20\n"
+            "  python -m src.cli run --only-offset all\n"
+            "  python -m src.cli run --only-offset long --limit-windows 20\n"
             "  python -m src.cli plan --dry-run\n"
             "  python -m src.cli verify --mode tunnel --limit 200\n"
             "  python -m src.cli report\n"
@@ -74,23 +74,21 @@ def build_parser() -> argparse.ArgumentParser:
             help="Input JSON with the city list (default: input.json)",
         )
         sp.add_argument(
-            "--horizon", default="all",
+            "--only-offset", default="all", choices=["short", "long", "all"],
             help=(
-                "Which lead time(s) to run: 3, 7, '3,7', or 'all' "
-                "(default: all configured horizons)"
+                "Which offset(s) to run: 'short' (~1 week out), "
+                "'long' (~3 months out), or 'all' (default)"
             ),
         )
         sp.add_argument(
-            "--months", type=int, default=None,
-            help="Rolling window length in months (default: HORIZON_MONTHS)",
+            "--reference-date", type=_parse_date, default=None,
+            help="The 'today' the offsets are measured from, YYYY-MM-DD "
+                 "(default: actual today)",
         )
         sp.add_argument(
-            "--start-date", type=_parse_date, default=None,
-            help="First execution date, YYYY-MM-DD (default: today)",
-        )
-        sp.add_argument(
-            "--step-days", type=int, default=None,
-            help="Sample every N days inside the window (default: HORIZON_STEP_DAYS)",
+            "--durations", default=None,
+            help="Comma-separated stay lengths in nights, overriding "
+                 "HORIZON_STAY_DURATIONS_NIGHTS (e.g. '3,10')",
         )
         sp.add_argument(
             "--cities", default=None,
@@ -181,17 +179,17 @@ def _parse_date(value: str) -> date:
     return datetime.strptime(value, "%Y-%m-%d").date()
 
 
-def _parse_horizons(value: str) -> Optional[list[int]]:
-    """``'3,7'`` -> ``[3, 7]``; ``'all'`` -> ``None`` (meaning all configured)."""
+def _parse_only_offset(value: str) -> Optional[str]:
+    """``'short'`` / ``'long'`` -> as given; ``'all'`` -> ``None`` (both)."""
     cleaned = (value or "all").strip().lower()
-    if cleaned in ("all", "*", ""):
+    return None if cleaned in ("all", "*", "") else cleaned
+
+
+def _parse_durations(value: Optional[str]) -> Optional[list[int]]:
+    """``'3,10'`` -> ``[3, 10]``; ``None``/empty -> ``None`` (use the default)."""
+    if not value:
         return None
-    offsets: list[int] = []
-    for part in cleaned.replace("j+", "").split(","):
-        part = part.strip()
-        if part:
-            offsets.append(int(part))
-    return offsets or None
+    return [int(part.strip()) for part in value.split(",") if part.strip()]
 
 
 # ---------------------------------------------------------------------------
@@ -229,16 +227,12 @@ def _load_cities(args: argparse.Namespace) -> list[dict]:
 def _build_plan(args: argparse.Namespace, settings):
     entries = _load_cities(args)
 
-    horizon_settings = settings.horizon.model_copy()
-    if getattr(args, "step_days", None):
-        horizon_settings.step_days = args.step_days
-
     plan = plan_from_city_entries(
         entries,
-        horizon_settings,
-        start=getattr(args, "start_date", None),
-        months=getattr(args, "months", None),
-        offsets=_parse_horizons(getattr(args, "horizon", "all")),
+        settings.horizon,
+        reference_date=getattr(args, "reference_date", None),
+        only=_parse_only_offset(getattr(args, "only_offset", "all")),
+        durations=_parse_durations(getattr(args, "durations", None)),
     )
 
     limit = getattr(args, "limit_windows", None)
@@ -273,7 +267,7 @@ async def cmd_run(args: argparse.Namespace) -> int:
 
     plan = _build_plan(args, settings)
     if not plan.windows:
-        log.error("The generated plan is empty - check --input and --horizon")
+        log.error("The generated plan is empty - check --input and --only-offset")
         return 1
 
     runner = PipelineRunner(settings, run_id=args.run_id)
@@ -293,8 +287,8 @@ async def cmd_run(args: argparse.Namespace) -> int:
         return 2
     if args.fail_under_target and not outcome.crossings_met:
         log.error(
-            "Per-crossing minimum (%d clean hotels per city x horizon) NOT "
-            "met for every crossing - see 'by_crossing' in the quality report",
+            "Per-crossing minimum (%d clean hotels per offset x stay-duration) "
+            "NOT met for every crossing - see 'by_crossing' in the quality report",
             outcome.report.min_clean_hotels_per_crossing,
         )
         return 2
@@ -309,11 +303,12 @@ async def cmd_plan(args: argparse.Namespace) -> int:
         print(json.dumps(plan.summary(), indent=2))
     else:
         print(f"\n{plan.describe()}\n")
-        print(f"  Cities   : {', '.join(plan.cities[:12])}"
+        print(f"  Cities    : {', '.join(plan.cities[:12])}"
               f"{' ...' if len(plan.cities) > 12 else ''}")
-        print(f"  Horizons : {', '.join(h.label for h in plan.horizons)}")
-        print(f"  Window   : {plan.start_date} -> {plan.end_date} "
-              f"({plan.months} months)\n")
+        print(f"  Offsets   : {', '.join(plan.offset_labels)}")
+        print(f"  Durations : {', '.join(f'{n}n' for n in plan.durations_nights)}")
+        print(f"  Reference : {plan.reference_date}"
+              f"{' (FALLBACK long offset)' if plan.is_fallback else ''}\n")
 
         if args.dry_run:
             print("  First 10 windows:")
@@ -406,8 +401,12 @@ async def cmd_doctor(_: argparse.Namespace) -> int:
         settings = get_settings()
         print("  [ok]   settings loaded")
         print(f"         Nuitee URL      : {settings.nuitee.url}")
-        print(f"         horizons        : "
-              f"{settings.horizon.offsets_days} over {settings.horizon.months} months")
+        print(f"         offsets         : "
+              f"short={settings.horizon.short_offset_days}d, "
+              f"long={settings.horizon.long_offset_months}mo "
+              f"(fallback={settings.horizon.long_offset_fallback_months}mo)")
+        print(f"         durations       : "
+              f"{settings.horizon.stay_durations_nights} nights")
         print(f"         clean target    : {settings.quality.target_clean_hotels}")
         print(f"         output dir      : {settings.storage.output_dir}")
     except Exception as exc:

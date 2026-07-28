@@ -89,4 +89,4 @@ HEALTHCHECK --interval=60s --timeout=20s --start-period=30s --retries=3 \
   CMD python -m src.cli doctor >/dev/null 2>&1 || exit 1
 
 ENTRYPOINT ["python", "-u", "-m", "src.cli"]
-CMD ["run", "--horizon", "all", "--months", "3"]
+CMD ["run", "--only-offset", "all"]

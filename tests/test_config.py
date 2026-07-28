@@ -38,10 +38,10 @@ class TestCsvEnvFields:
         settings = reload_settings()
         assert settings.browser.blocked_resource_types == ["image", "media", "font"]
 
-    def test_horizon_offsets_from_csv(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("HORIZON_OFFSETS_DAYS", "3,7")
+    def test_horizon_durations_from_csv(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HORIZON_STAY_DURATIONS_NIGHTS", "3,10")
         settings = reload_settings()
-        assert settings.horizon.offsets_days == [3, 7]
+        assert settings.horizon.stay_durations_nights == [3, 10]
 
     def test_payment_guard_tokens_from_csv(
         self, monkeypatch: pytest.MonkeyPatch
@@ -61,15 +61,15 @@ class TestCsvEnvFields:
 
     def test_json_array_form_still_works(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Both syntaxes must work: plain CSV and an explicit JSON array."""
-        monkeypatch.setenv("HORIZON_OFFSETS_DAYS", "[3, 7, 14]")
+        monkeypatch.setenv("HORIZON_STAY_DURATIONS_NIGHTS", "[3, 10, 14]")
         settings = reload_settings()
-        assert settings.horizon.offsets_days == [3, 7, 14]
+        assert settings.horizon.stay_durations_nights == [3, 10, 14]
 
     def test_unset_field_keeps_python_default(self) -> None:
         """No env var present must not touch the NoDecode-aliased field at all."""
         settings = reload_settings()
         assert settings.browser.blocked_resource_types == ["image", "media", "font"]
-        assert settings.horizon.offsets_days == [3, 7]
+        assert settings.horizon.stay_durations_nights == [3, 10]
 
 
 class TestFullEnvExampleFile:
@@ -83,10 +83,10 @@ class TestFullEnvExampleFile:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
     ) -> None:
         monkeypatch.setenv("BROWSER_BLOCKED_RESOURCE_TYPES", "image,media,font")
-        monkeypatch.setenv("HORIZON_OFFSETS_DAYS", "3,7")
+        monkeypatch.setenv("HORIZON_STAY_DURATIONS_NIGHTS", "3,10")
         monkeypatch.setenv("STORAGE_OUTPUT_DIR", str(tmp_path))
 
         settings = reload_settings()
 
         assert settings.browser.blocked_resource_types == ["image", "media", "font"]
-        assert settings.horizon.offsets_days == [3, 7]
+        assert settings.horizon.stay_durations_nights == [3, 10]

@@ -48,6 +48,8 @@ from src.models import (
     SearchWindow,
     TunnelResult,
     TunnelStatus,
+    format_rooms_config,
+    parse_rooms_config,
 )
 from src.pipeline.quality import QualityGate
 from src.pipeline.storage import PriceStore
@@ -299,13 +301,7 @@ class Verifier:
 
     @staticmethod
     def _window_from_row(row: dict[str, Any]) -> SearchWindow:
-        rooms_raw = str(row.get("adults_per_room") or "[2]")
-        try:
-            rooms = tuple(
-                int(x) for x in rooms_raw.strip("[]").split(",") if x.strip()
-            ) or (2,)
-        except ValueError:
-            rooms = (2,)
+        rooms = parse_rooms_config(str(row.get("adults_per_room") or "2"))
 
         return SearchWindow.from_dict(
             {
@@ -368,7 +364,7 @@ class Verifier:
             execution_date=window.execution_date.isoformat(),
             nights=window.nights,
             rooms=window.rooms,
-            adults_per_room=str(list(window.rooms_config)),
+            adults_per_room=format_rooms_config(window.rooms_config),
 
             nuitee_display_price=tunnel.display_price,
             nuitee_final_price=tunnel.final_price,
@@ -472,7 +468,9 @@ async def import_legacy_csv(path: Path, settings: Settings) -> int:
                 horizon_offset_days=0,
                 execution_date=datetime.now().date().isoformat(),
                 rooms=int(_as_float(row.get("Rooms")) or 1),
-                adults_per_room=(row.get("Adults per Room") or "[2]").strip(),
+                adults_per_room=format_rooms_config(
+                    parse_rooms_config(row.get("Adults per Room") or "2")
+                ),
 
                 nuitee_display_price=_as_float(row.get("Nuitee Price (MAD)")),
                 nuitee_final_price=None,       # legacy rows never had one
