@@ -339,6 +339,59 @@ class TestPriceExtraction:
         assert price == pytest.approx(1380.0)
 
 
+class TestLocalFeesExtraction:
+    """
+    ``_extract_local_fees`` scrapes the real "Local fees" line off the
+    booking page instead of estimating it from final_price - display_price
+    * nights - see models.compute_hidden_fees's updated docstring and the
+    live-verified investigation in tunnel.py's total-price extraction.
+    """
+
+    async def test_scrapes_the_real_local_fees_line(
+        self, navigator: TunnelNavigator
+    ) -> None:
+        page = FakePage()
+        page.evaluate_result = ["Local fees MAD 145.25"]
+        navigator.page = page
+
+        fees = await navigator._extract_local_fees()
+        assert fees == pytest.approx(145.25)
+
+    async def test_missing_local_fees_line_returns_none_not_zero(
+        self, navigator: TunnelNavigator
+    ) -> None:
+        """
+        None (not 0) so the runner can tell "no fees line found" apart from
+        "the fee genuinely is zero" and fall back to the estimate.
+        """
+        navigator.page = FakePage()
+        assert await navigator._extract_local_fees() is None
+
+    async def test_small_fee_amounts_are_not_rejected_as_too_small(
+        self, navigator: TunnelNavigator
+    ) -> None:
+        """
+        Fees use a low (1 MAD) floor, unlike the whole-stay total's much
+        higher min_price - a real fee can legitimately be a small amount.
+        """
+        page = FakePage()
+        page.evaluate_result = ["Taxes and fees MAD 12.50"]
+        navigator.page = page
+
+        fees = await navigator._extract_local_fees()
+        assert fees == pytest.approx(12.50)
+
+    async def test_french_label_is_matched(
+        self, navigator: TunnelNavigator
+    ) -> None:
+        page = FakePage()
+        page.evaluate_result = ["Frais locaux MAD 90.00"]
+        navigator.page = page
+
+        fees = await navigator._extract_local_fees()
+        assert fees == pytest.approx(90.00)
+
+
 # ---------------------------------------------------------------------------
 # Result semantics
 # ---------------------------------------------------------------------------

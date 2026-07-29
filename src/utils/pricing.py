@@ -111,9 +111,21 @@ _NOISE_PATTERNS = [
     r"\d[\d,.]*\s*(?:km|m|miles?|mi)\b",
     r"\b\d\s*(?:nights?|nuits?|adults?|adultes?|guests?|rooms?|chambres?)\b",
     r"\b\d{1,2}[:h]\d{2}\b",              # times: 14:00, 14h00
-    r"\b\d{4}-\d{2}-\d{2}\b",             # ISO dates
+    r"\b\d{4}-\d{2}-\d{2}\b",             # ISO dates: 2026-08-04
     r"\b\d{1,2}/\d{1,2}/\d{2,4}\b",       # slash dates
     r"\b\d\.\d\b",                        # lone review scores: 8.7, 4.5
+    # "Aug 4, 2026" / "Aug 4-7, 2026" / "4 Aug 2026" style dates. A bare
+    # 4-digit year (e.g. the "2026" in a check-in/check-out line) otherwise
+    # sails straight through every other filter above - it is >= min_value
+    # and looks exactly like a plausible MAD amount - and a wide sweep
+    # (container/body fallback strategies) can then pick a random calendar
+    # year as the "price" if it happens to exceed every genuine number in
+    # scope. Confirmed live: a booking page's own date line is enough to
+    # make an unqualified max-of-all-numbers sweep return the wrong figure.
+    r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+"
+    r"\d{1,2}(?:st|nd|rd|th)?\s*[-–]?\s*\d{0,2}(?:st|nd|rd|th)?,?\s+\d{4}\b",
+    r"\b\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)"
+    r"[a-z]*\.?,?\s+\d{4}\b",
 ]
 
 #: Separators that are ALWAYS thousands separators, never decimal points.

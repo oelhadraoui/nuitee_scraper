@@ -59,6 +59,7 @@ from src.utils.browser import (
     human_scroll,
     is_visible,
     safe_text,
+    safe_text_no_strike,
 )
 from src.utils.logging_setup import get_logger
 from src.utils.pricing import parse_price
@@ -263,10 +264,12 @@ class TunnelNavigator:
 
         if price is not None:
             result.final_price = price
+            result.local_fees = await self._extract_local_fees()
             result.status = TunnelStatus.OK
             self.log.info(
-                "final payable price %.2f %s (room=%s)",
+                "final payable price %.2f %s (room=%s, local fees=%s)",
                 price, result.currency, (result.room_label or "n/a")[:40],
+                f"{result.local_fees:.2f}" if result.local_fees is not None else "n/a",
             )
             return
 
@@ -587,7 +590,7 @@ class TunnelNavigator:
                 locator = self.page.locator(candidate).first
                 if not await is_visible(locator, timeout=500):
                     continue
-                raw = await safe_text(locator, timeout=900)
+                raw = await safe_text_no_strike(locator, timeout=900)
                 if not raw:
                     continue
                 parsed = parse_price(
@@ -595,7 +598,7 @@ class TunnelNavigator:
                     min_value=min_price,
                     max_value=max_price,
                     default_currency=currency,
-                    strategy="max",
+                    strategy="first",
                 )
                 if parsed.ok:
                     if not quiet:
@@ -616,13 +619,22 @@ class TunnelNavigator:
                 return price
 
         # -- strategy 3: container sweep ------------------------------------
+        # "max" is deliberately kept here (unlike strategy 1's dedicated
+        # element, which uses "first"): this sweep spans a much wider region
+        # - the whole cancellation-policy panel plus room/fees breakdown, or
+        # the full page body as a last resort - where the grand total is not
+        # necessarily the first number in document order (a cancellation
+        # refund figure often reads earlier). It IS reliably the largest
+        # number, provided struck-through "was" prices and bare calendar
+        # years are excluded first - which safe_text_no_strike() and the
+        # date-aware noise patterns in pricing.py now both guarantee.
         container_cascade = self.registry.get_optional("nuitee.tunnel.summary.container")
         container = await container_cascade.first_attached(self.page, timeout=800)
         scope_text = None
         if container is not None:
-            scope_text = await safe_text(container, timeout=1_500)
+            scope_text = await safe_text_no_strike(container, timeout=1_500)
         if not scope_text:
-            scope_text = await safe_text(self.page.locator("body").first, timeout=2_000)
+            scope_text = await safe_text_no_strike(self.page.locator("body").first, timeout=2_000)
 
         if scope_text:
             parsed = parse_price(
@@ -639,6 +651,36 @@ class TunnelNavigator:
 
         return None
 
+    async def _extract_local_fees(self) -> Optional[float]:
+        """
+        Read the "Local fees" / "taxes and fees" line directly off the
+        booking page's summary - the site's own figure, not an estimate.
+
+        Earlier versions only had ``compute_hidden_fees()``, which infers
+        this number from ``final_price - display_price * nights``. That
+        estimate is reasonable when both inputs are correct, but it silently
+        inherits any error in either one (exactly what happened when a
+        struck-through "was" price briefly inflated ``final_price`` in
+        production - see the ``safe_text_no_strike`` fix above). The site
+        prints the real fee amount in plain text right next to the total
+        ("Local fees MAD 145.25"), so it is read directly, the same way the
+        total itself is - reusing the struck-through-safe label-row scan.
+
+        Returns ``None`` (not 0) when the line can't be found, so callers can
+        tell "no fees" apart from "we didn't find the fees line" and fall
+        back to the estimate accordingly.
+        """
+        labels = self.registry.strings("nuitee.tunnel.summary.local_fees_row_labels")
+        if not labels:
+            return None
+        max_price = self.settings.quality.max_price_mad
+        currency = self.settings.nuitee.currency
+        # Fees are usually small (tens to low hundreds of MAD) - use a low
+        # floor rather than the whole-stay total's min_price, or a cheap
+        # property's real fee could be filtered out as "too small to be a
+        # price".
+        return await self._extract_by_label(labels, 1.0, max_price, currency)
+
     async def _extract_by_label(
         self,
         labels: list[str],
@@ -652,6 +694,11 @@ class TunnelNavigator:
         Implemented in the page context because walking up from a text node to
         its row container is far cheaper in one JS round-trip than in dozens
         of Playwright locator calls.
+
+        Struck-through ("was" / pre-discount) text is excluded from every
+        candidate row before it is returned, mirroring the same guard used in
+        ``_extract_total_price``'s dedicated-element strategy: a crossed-out
+        anchor price must never become a numeric candidate.
         """
         try:
             raw_row = await self.page.evaluate(
@@ -663,6 +710,29 @@ class TunnelNavigator:
                     .replace(/[\\u0300-\\u036f]/g, '')
                     .replace(/\\s+/g, ' ')
                     .trim();
+
+                  const isStruck = (node) => {
+                    for (let n = node; n; n = n.parentElement) {
+                      const cs = getComputedStyle(n);
+                      if (cs && cs.textDecorationLine &&
+                          cs.textDecorationLine.includes('line-through')) {
+                        return true;
+                      }
+                    }
+                    return false;
+                  };
+                  const textExcludingStruck = (root) => {
+                    const walker = document.createTreeWalker(
+                      root, NodeFilter.SHOW_TEXT, null
+                    );
+                    const parts = [];
+                    let n;
+                    while ((n = walker.nextNode())) {
+                      if (n.parentElement && isStruck(n.parentElement)) continue;
+                      if (n.textContent) parts.push(n.textContent);
+                    }
+                    return parts.join(' ');
+                  };
 
                   const wanted = labels.map(norm);
                   const nodes = Array.from(
@@ -678,10 +748,11 @@ class TunnelNavigator:
                     if (!text || text.length > 60) continue;
                     if (!wanted.some((w) => text.includes(w))) continue;
 
-                    // Walk up to a container that also holds a number.
+                    // Walk up to a container that also holds a number,
+                    // reading its text with struck-through content removed.
                     let scope = node;
                     for (let depth = 0; depth < 4 && scope; depth += 1) {
-                      const scopeText = scope.textContent || '';
+                      const scopeText = textExcludingStruck(scope);
                       if (/\\d/.test(scopeText.replace(text, ''))) {
                         matches.push(scopeText.trim().slice(0, 200));
                         break;
@@ -707,14 +778,17 @@ class TunnelNavigator:
                 min_value=min_price,
                 max_value=max_price,
                 default_currency=currency,
-                strategy="max",
+                strategy="first",
             )
             if parsed.ok and parsed.amount_mad is not None:
                 candidates.append(parsed.amount_mad)
 
-        # Several rows can match ("Total price" and "Total to pay"); the
-        # payable figure is the largest.
+        # Several distinct rows can match ("Total price" and "Total to pay");
+        # the payable figure among genuinely different rows is the largest.
+        # (The anchor-vs-payable ambiguity *within* one row was already
+        # resolved above by stripping struck-through text and using "first".)
         return max(candidates) if candidates else None
+
 
     # ======================================================================
     # Debugging

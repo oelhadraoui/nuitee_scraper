@@ -402,11 +402,17 @@ class PipelineRunner:
 
             nuitee_display_price=tunnel.display_price or hotel.display_price,
             nuitee_final_price=tunnel.final_price,
-            nuitee_hidden_fees=compute_hidden_fees(
+            # Prefer the fee actually scraped off the booking page; only
+            # fall back to the nights-adjusted estimate when that line
+            # couldn't be found for this hotel.
+            nuitee_hidden_fees=tunnel.local_fees
+            if tunnel.local_fees is not None
+            else compute_hidden_fees(
                 tunnel.final_price,
                 tunnel.display_price or hotel.display_price,
                 window.nights,
             ),
+            nuitee_local_fees=tunnel.local_fees,
             nuitee_room_label=tunnel.room_label,
             tunnel_status=tunnel.status.value
             if isinstance(tunnel.status, TunnelStatus)

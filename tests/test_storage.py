@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 from pathlib import Path
 
 import pytest
@@ -250,6 +251,31 @@ class TestExport:
         body = clean_path.read_text(encoding="utf-8-sig")
         assert "Clean Hotel" in body
         assert "Dirty Hotel" not in body
+
+    async def test_scraped_local_fees_round_trip_through_csv(
+        self, store: PriceStore
+    ) -> None:
+        """
+        ``nuitee_local_fees`` (the real "Local fees" figure scraped off the
+        booking page) must survive add -> flush -> CSV export intact, with
+        its own dedicated, clearly-labelled column - distinct from the older
+        ``nuitee_hidden_fees`` estimate.
+        """
+        await store.add(
+            make_record("Fee Hotel", nuitee_local_fees=145.25, nuitee_hidden_fees=145.25)
+        )
+        await store.flush()
+
+        path = await store.export_csv()
+        with path.open(newline="", encoding="utf-8-sig") as handle:
+            reader = list(csv.reader(handle))
+        header, rows = reader[0], reader[1:]
+
+        assert "Nuitee Local Fees (MAD, scraped)" in header
+        local_fees_idx = header.index("Nuitee Local Fees (MAD, scraped)")
+
+        row = next(r for r in rows if "Fee Hotel" in r)
+        assert row[local_fees_idx] == "145.25"
 
 
 class TestReport:

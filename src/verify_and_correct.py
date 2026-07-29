@@ -329,6 +329,7 @@ class Verifier:
             status=status,
             final_price=_as_float(row.get("nuitee_final_price")),
             display_price=_as_float(row.get("nuitee_display_price")),
+            local_fees=_as_float(row.get("nuitee_local_fees")),
             room_label=row.get("nuitee_room_label"),
             deepest_panel=str(row.get("tunnel_deepest_panel") or "unknown"),
             detail_url=row.get("nuitee_url"),
@@ -371,9 +372,12 @@ class Verifier:
 
             nuitee_display_price=tunnel.display_price,
             nuitee_final_price=tunnel.final_price,
-            nuitee_hidden_fees=compute_hidden_fees(
+            nuitee_hidden_fees=tunnel.local_fees
+            if tunnel.local_fees is not None
+            else compute_hidden_fees(
                 tunnel.final_price, tunnel.display_price, window.nights
             ),
+            nuitee_local_fees=tunnel.local_fees,
             nuitee_room_label=tunnel.room_label,
             tunnel_status=tunnel.status.value,
             tunnel_deepest_panel=tunnel.deepest_panel,

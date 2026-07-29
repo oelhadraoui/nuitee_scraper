@@ -346,6 +346,17 @@ nuitee:
         - 'prix total'
         - 'grand total'
         - 'montant total'
+      # Plain label strings for the JS-based row scan (_extract_by_label),
+      # matching the pattern already used by total_row_labels above. This is
+      # what actually gets read now (see TunnelNavigator._extract_local_fees)
+      # - the "Local fees" figure is SCRAPED off the booking page instead of
+      # being estimated from final_price - display_price * nights.
+      local_fees_row_labels:
+        - 'local fees'
+        - 'taxes and fees'
+        - 'taxes & fees'
+        - 'frais locaux'
+        - 'montant des taxes'
       taxes_and_fees:
         - 'text=/local fees/i'
         - 'text=/taxes and fees/i'

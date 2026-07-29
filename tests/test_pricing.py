@@ -36,6 +36,64 @@ class TestNoiseStripping:
         assert parse_price(text).amount_mad == 1250.0
 
 
+class TestDateNoiseStripping:
+    """
+    A checkout page's own check-in/check-out date line ("Aug 4, 2026") must
+    never be mistaken for a price. This is not hypothetical: a live sweep of
+    Nuitee's booking page (Puerta Azul / Chefchaouen, 2026-08-04) found the
+    bare year "2026" was the single largest number on the page - bigger than
+    the real MAD 1,899.36 total - which is exactly the failure mode a
+    strategy="max" fallback sweep is vulnerable to.
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Check-in & Check-out Aug 4, 2026 - Aug 7, 2026 (3 nights)",
+            "Cancel by Aug 2, 2026 07:59 PM",
+            "4 Aug 2026",
+            "Aug 4-7, 2026",
+        ],
+    )
+    def test_bare_calendar_dates_yield_no_price(self, text: str) -> None:
+        assert parse_price(text, min_value=150.0).amount_mad is None
+
+    def test_year_does_not_beat_the_real_total_in_a_wide_sweep(self) -> None:
+        """
+        Regression test for the exact live scenario: a full-page sweep whose
+        text includes the check-in/check-out dates, a cancellation-policy
+        panel, and the real grand total. Strategy "max" must land on the
+        total (1,899.36), not the year (2026) or a cancellation sub-amount.
+        """
+        body_text = (
+            "Chefchaouen Aug 04 - Aug 07 2 Guests Puerta Azul "
+            "Av. Maghreb arabe, Chefchaouene, MA "
+            "9.4 Wonderful Based on 1,854 reviews "
+            "Aug 4, 2026 - Aug 7, 2026 (3 nights) "
+            "Cancel by Aug 2, 2026 07:59 PM Free Cancellation "
+            "Full refund - MAD 1,754.11 "
+            "Cancel after Aug 2, 2026 08:00 PM "
+            "Cancellation charge MAD 584.70 Refund MAD 1,169.41 "
+            "MAD 584.70 average per night 1 room x 3 nights MAD 1,754.11 "
+            "Local fees MAD 145.25 "
+            "Total MAD 1,899.36 Includes taxes and fees "
+            "Pay now MAD 1,754.11 Pay at Property MAD 145.25"
+        )
+        parsed = parse_price(
+            body_text, min_value=150.0, max_value=200_000.0, strategy="max"
+        )
+        assert parsed.amount_mad == pytest.approx(1899.36)
+
+    def test_price_equal_to_a_plausible_year_is_the_only_blind_spot(self) -> None:
+        """
+        Documented trade-off: a genuine price that happens to equal a
+        four-digit year immediately preceded by a month name would also be
+        stripped. This is an acceptable, extremely rare false negative next
+        to the alternative (years routinely masquerading as prices).
+        """
+        assert extract_amounts("Aug 4, 2026", min_value=150.0) == []
+
+
 class TestSeparators:
     """Locale-specific number formatting must all normalise identically."""
 

@@ -326,10 +326,16 @@ class BrowserManager:
         self._browser: Optional[Browser] = None
         self._semaphore = asyncio.Semaphore(max(1, concurrency))
         self._contexts_created = 0
+        self._relaunch_count = 0
+        self._relaunch_lock = asyncio.Lock()
 
     async def __aenter__(self) -> "BrowserManager":
         self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(
+        self._browser = await self._launch_browser()
+        return self
+
+    async def _launch_browser(self) -> Browser:
+        browser = await self._playwright.chromium.launch(
             headless=self.settings.browser.headless,
             slow_mo=self.settings.browser.slow_mo_ms,
             args=self.settings.browser.launch_args,
@@ -340,7 +346,44 @@ class BrowserManager:
             HAS_STEALTH,
             self._semaphore._value,
         )
-        return self
+        return browser
+
+    async def _ensure_connected(self) -> None:
+        """
+        Relaunch Chromium if it has died mid-run.
+
+        Root cause of a real production incident: a multi-hour run's
+        Chromium process crashed partway through (OOM / renderer crash under
+        Docker's default resource limits), and every subsequent
+        ``page()`` acquisition then failed instantly with
+        "Target page, context or browser has been closed" for the rest of
+        the run - silently, since each failure looked like an ordinary
+        per-window scrape error rather than a fatal, permanent state. This
+        is why runs that started fine sometimes ended with entire
+        offset/duration crossings (e.g. the 1-week/10-night or long-offset
+        windows scheduled later in the plan) completely empty: the browser
+        died once, early, and nothing after that point could ever succeed
+        again. Checking ``is_connected()`` before every acquisition and
+        relaunching under a lock (so concurrent ``page()`` callers don't
+        all race to relaunch at once) means a crash costs one relaunch, not
+        the rest of the run.
+        """
+        if self._browser is not None and self._browser.is_connected():
+            return
+        async with self._relaunch_lock:
+            if self._browser is not None and self._browser.is_connected():
+                return
+            if self._browser is not None:
+                try:
+                    await self._browser.close()
+                except Exception:
+                    pass
+            self._relaunch_count += 1
+            log.warning(
+                "Chromium was disconnected - relaunching (relaunch #%d)",
+                self._relaunch_count,
+            )
+            self._browser = await self._launch_browser()
 
     async def __aexit__(self, *exc_info) -> None:
         if self._browser is not None:
@@ -370,6 +413,7 @@ class BrowserManager:
     ) -> AsyncIterator[tuple[BrowserContext, Page]]:
         """Acquire a concurrency slot, yield a fresh (context, page), clean up."""
         async with self._semaphore:
+            await self._ensure_connected()
             context, page_obj = await new_page(
                 self.browser,
                 self.settings,
@@ -395,6 +439,57 @@ async def safe_text(locator, timeout: int = 2_000) -> Optional[str]:
     try:
         await locator.wait_for(state="attached", timeout=timeout)
         return (await locator.inner_text()).strip()
+    except Exception:
+        return None
+
+
+async def safe_text_no_strike(locator, timeout: int = 2_000) -> Optional[str]:
+    """
+    Like :func:`safe_text`, but text inside a struck-through ("was" / pre-
+    discount) element is dropped before the remaining text is returned.
+
+    Booking.com's cheapest-first card and Nuitee's checkout summary both
+    render a crossed-out original price next to the real payable one
+    (confirmed live on both sites - see ``BookingScraper._extract_card_price``
+    for the card-price analogue of this exact problem). Plain ``inner_text()``
+    includes struck-through text with no marker, so a naive numeric sweep of
+    the container can silently pick the pre-discount anchor price instead of
+    the true payable total. This walks the live DOM (not a static snapshot)
+    and excludes any node - or ancestor of a node - whose computed
+    ``text-decoration-line`` includes ``line-through``, so the anchor price
+    never becomes a numeric candidate in the first place, independent of
+    whatever min/max/first strategy the caller applies afterwards.
+    """
+    try:
+        await locator.wait_for(state="attached", timeout=timeout)
+        text = await locator.evaluate(
+            """
+            (el) => {
+              const isStruck = (node) => {
+                for (let n = node; n; n = n.parentElement) {
+                  const cs = getComputedStyle(n);
+                  if (cs && cs.textDecorationLine &&
+                      cs.textDecorationLine.includes('line-through')) {
+                    return true;
+                  }
+                }
+                return false;
+              };
+              const walker = document.createTreeWalker(
+                el, NodeFilter.SHOW_TEXT, null
+              );
+              const parts = [];
+              let node;
+              while ((node = walker.nextNode())) {
+                const parent = node.parentElement;
+                if (parent && isStruck(parent)) continue;
+                if (node.textContent) parts.push(node.textContent);
+              }
+              return parts.join(' ');
+            }
+            """
+        )
+        return (text or "").strip() or None
     except Exception:
         return None
 

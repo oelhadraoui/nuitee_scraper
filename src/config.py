@@ -29,6 +29,7 @@ Usage
 from __future__ import annotations
 
 import json
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -464,6 +465,31 @@ class StorageSettings(BaseSettings):
 # Root settings
 # ---------------------------------------------------------------------------
 
+#: Field names on ``Settings`` that hold a *nested* sub-settings model.
+#: Every real configuration knob for these sections is deliberately
+#: prefixed (``BROWSER_HEADLESS``, ``TUNNEL_MAX_RETRIES``, ...) - a bare
+#: env var matching one of these names is never a supported way to
+#: configure this app. pydantic-settings doesn't know that, though: if a
+#: bare env var happens to exist with the same name (case-insensitively)
+#: as one of these fields, it tries to JSON-decode that single value as
+#: the *entire* nested model and blows up when it isn't JSON. This bites
+#: real users in practice - most commonly ``BROWSER``, which VS Code
+#: Server/Remote-SSH sets automatically in the shells it spawns (it
+#: points at a helper script used to open links, completely unrelated to
+#: this app's Playwright browser config). Guard against that whole class
+#: of collision rather than just the one we've seen.
+_NESTED_SETTINGS_FIELD_NAMES = (
+    "browser",
+    "timeouts",
+    "tunnel",
+    "booking",
+    "nuitee",
+    "horizon",
+    "quality",
+    "storage",
+)
+
+
 class Settings(BaseSettings):
     """Root configuration object - compose of all sub-settings."""
 
@@ -486,6 +512,24 @@ class Settings(BaseSettings):
     horizon: HorizonSettings = Field(default_factory=HorizonSettings)
     quality: QualitySettings = Field(default_factory=QualitySettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
+
+    def __init__(self, **kwargs: object) -> None:
+        # See _NESTED_SETTINGS_FIELD_NAMES above: strip any bare
+        # collision-prone env var for the duration of construction only,
+        # then restore it so the rest of the process (and any other
+        # library that might legitimately want e.g. $BROWSER) is
+        # unaffected. Each sub-model still reads its own prefixed vars
+        # (BROWSER_*, TUNNEL_*, ...) completely normally - this only
+        # blocks the accidental "whole-object JSON" collision.
+        stashed: dict[str, str] = {}
+        for name in _NESTED_SETTINGS_FIELD_NAMES:
+            for key in (name, name.upper()):
+                if key in os.environ:
+                    stashed[key] = os.environ.pop(key)
+        try:
+            super().__init__(**kwargs)
+        finally:
+            os.environ.update(stashed)
 
     @model_validator(mode="after")
     def _prepare_dirs(self) -> "Settings":

@@ -156,6 +156,12 @@ def compute_hidden_fees(
     nights: int,
 ) -> Optional[float]:
     """
+    FALLBACK ONLY. Prefer the scraped ``TunnelResult.local_fees`` (the site's
+    own "Local fees" / "taxes and fees" line, read directly off the booking
+    page - see ``TunnelNavigator._extract_local_fees``). This function is
+    an *estimate* used only when that line couldn't be scraped for a given
+    hotel, kept for backward compatibility and as a sanity cross-check.
+
     The true stay-level fees Nuitee's per-night listing price doesn't show.
 
     ``display_price`` is a PER-NIGHT rate; ``final_price`` is the TOTAL
@@ -234,6 +240,11 @@ class TunnelResult:
     status: TunnelStatus = TunnelStatus.NOT_ATTEMPTED
     final_price: Optional[float] = None      # true payable total for the stay, MAD
     display_price: Optional[float] = None    # per-night listing price, MAD
+    local_fees: Optional[float] = None       # "Local fees" line, READ off the
+                                              # booking page directly - not
+                                              # derived from final_price and
+                                              # display_price. See
+                                              # TunnelNavigator._extract_local_fees.
     currency: str = "MAD"
     room_label: Optional[str] = None
     panels_visited: list[str] = field(default_factory=list)
@@ -322,6 +333,7 @@ class PriceRecord:
     nuitee_display_price: Optional[float] = None
     nuitee_final_price: Optional[float] = None
     nuitee_hidden_fees: Optional[float] = None
+    nuitee_local_fees: Optional[float] = None
     nuitee_room_label: Optional[str] = None
     tunnel_status: str = TunnelStatus.NOT_ATTEMPTED.value
     tunnel_deepest_panel: str = PanelKind.UNKNOWN.value
@@ -407,6 +419,7 @@ CSV_COLUMNS: list[str] = [
     "nuitee_display_price",
     "nuitee_final_price",
     "nuitee_hidden_fees",
+    "nuitee_local_fees",
     "nuitee_room_label",
     "tunnel_status",
     "booking_price",
@@ -436,7 +449,8 @@ CSV_HEADER_ALIASES: dict[str, str] = {
     "rooms": "Rooms",
     "nuitee_display_price": "Nuitee Display Price (MAD, per night)",
     "nuitee_final_price": "Nuitee Final Payable (MAD, whole stay)",
-    "nuitee_hidden_fees": "Nuitee Hidden Fees (MAD, whole stay)",
+    "nuitee_hidden_fees": "Nuitee Hidden Fees (MAD, whole stay, estimated)",
+    "nuitee_local_fees": "Nuitee Local Fees (MAD, scraped)",
     "nuitee_room_label": "Nuitee Room",
     "tunnel_status": "Tunnel Status",
     "booking_price": "Booking Price (MAD, whole stay)",

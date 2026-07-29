@@ -44,8 +44,8 @@ x-scraper-base: &scraper-base
   deploy:
     resources:
       limits:
-        cpus: "${CPU_LIMIT:-4.0}"
-        memory: ${MEM_LIMIT:-8G}
+        cpus: "${CPU_LIMIT:-2.0}"
+        memory: ${MEM_LIMIT:-4G}
       reservations:
         cpus: "1.0"
         memory: 2G
