@@ -11,6 +11,8 @@ ranking, panel classification priority, and the price-extraction cascade.
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 
 from src.config import Settings
@@ -337,6 +339,122 @@ class TestPriceExtraction:
             ["prix total"], 150.0, 200_000.0, "MAD"
         )
         assert price == pytest.approx(1380.0)
+
+
+class TestRoomCardFeesHint:
+    """
+    ``_parse_card_fees_hint`` reads the "(+MAD 149 taxes and fees)" suffix
+    printed on every rate card on the detail page - verified live across
+    five different room offers on the same hotel, all in this exact format.
+    This is the PRIMARY source for local_fees now (see _resolve_local_fees):
+    it's unambiguous, unlike the checkout-page label scan which can latch
+    onto the wrong number when "taxes and fees" appears as a bare caption
+    with no adjacent figure of its own.
+    """
+
+    LABELS: ClassVar[list[str]] = [
+        "local fees", "taxes and fees", "taxes & fees",
+        "frais locaux", "montant des taxes",
+    ]
+
+    @pytest.mark.parametrize(
+        "card_text,expected",
+        [
+            (
+                "MAD 452 / night 10 nights, 1 room (+MAD 149 taxes and fees)",
+                149.0,
+            ),
+            (
+                "MAD 480 / night 10 nights, 1 room (+MAD 159 taxes and fees)",
+                159.0,
+            ),
+            (
+                "MAD 506 / night 10 nights, 1 room (+MAD 391 taxes and fees)",
+                391.0,
+            ),
+            (
+                "MAD 1091 / night 3 nights, 1 room (+MAD 199 frais locaux)",
+                199.0,
+            ),
+        ],
+    )
+    def test_reads_the_real_fee_suffix(
+        self, card_text: str, expected: float
+    ) -> None:
+        from src.scrapers.tunnel import _parse_card_fees_hint
+
+        assert _parse_card_fees_hint(
+            card_text, self.LABELS, default_currency="MAD"
+        ) == pytest.approx(expected)
+
+    def test_card_with_no_fee_suffix_returns_none(self) -> None:
+        from src.scrapers.tunnel import _parse_card_fees_hint
+
+        assert _parse_card_fees_hint(
+            "MAD 452 / night, free cancellation", self.LABELS,
+            default_currency="MAD",
+        ) is None
+
+    def test_empty_text_returns_none(self) -> None:
+        from src.scrapers.tunnel import _parse_card_fees_hint
+
+        assert _parse_card_fees_hint("", self.LABELS, default_currency="MAD") is None
+
+
+class TestResolveLocalFees:
+    """
+    ``_resolve_local_fees`` decides the final local_fees value: the room-card
+    hint always wins when present; the checkout-page scan is used only as a
+    fallback, and is discarded outright when it comes back suspiciously
+    close to the total (the exact failure mode that made every row's
+    local_fees identical to final_price before this fix).
+    """
+
+    def test_card_hint_wins_even_when_checkout_scan_disagrees(self) -> None:
+        from src.scrapers.tunnel import _resolve_local_fees
+
+        assert _resolve_local_fees(
+            card_hint=149.0, checkout_scan_value=4665.06, total_price=4665.06,
+        ) == pytest.approx(149.0)
+
+    def test_falls_back_to_checkout_scan_when_no_card_hint(self) -> None:
+        from src.scrapers.tunnel import _resolve_local_fees
+
+        assert _resolve_local_fees(
+            card_hint=None, checkout_scan_value=145.25, total_price=1899.36,
+        ) == pytest.approx(145.25)
+
+    def test_discards_checkout_scan_equal_to_total(self) -> None:
+        from src.scrapers.tunnel import _resolve_local_fees
+
+        # This is the exact bug pattern seen in production: local_fees came
+        # back identical to final_price because the label scan matched the
+        # total's own container.
+        assert _resolve_local_fees(
+            card_hint=None, checkout_scan_value=4665.06, total_price=4665.06,
+        ) is None
+
+    def test_discards_checkout_scan_close_to_total(self) -> None:
+        from src.scrapers.tunnel import _resolve_local_fees
+
+        # 95% of the total is still implausible for "fees".
+        assert _resolve_local_fees(
+            card_hint=None, checkout_scan_value=4400.0, total_price=4665.06,
+        ) is None
+
+    def test_keeps_a_plausible_small_checkout_scan_value(self) -> None:
+        from src.scrapers.tunnel import _resolve_local_fees
+
+        assert _resolve_local_fees(
+            card_hint=None, checkout_scan_value=145.25, total_price=1899.36,
+        ) == pytest.approx(145.25)
+
+    def test_no_values_at_all_returns_none(self) -> None:
+        from src.scrapers.tunnel import _resolve_local_fees
+
+        assert _resolve_local_fees(
+            card_hint=None, checkout_scan_value=None, total_price=1899.36,
+        ) is None
 
 
 class TestLocalFeesExtraction:

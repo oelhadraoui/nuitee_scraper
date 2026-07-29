@@ -240,6 +240,43 @@ class BookingScraper:
                 cards = page.locator(
                     self.registry.get("booking.property_card").combined
                 )
+
+                # _best_match scored card `index` in its OWN locator
+                # resolution; `cards` above is a second, independent
+                # resolution of the same list. Playwright locators are
+                # lazy, so if Booking's results re-sorted or re-rendered
+                # (lazy-loaded cards, injected sponsored/ad cards, an A/B
+                # re-rank) between those two resolutions, `cards.nth(index)`
+                # here can silently be a DIFFERENT property than the one
+                # `matched_name` actually names - live-observed: matched_name
+                # read "Grand Plaza Marrakech" while the price/URL read from
+                # the same index came back as an unrelated Ibis Moussafir
+                # property. Re-read the name at this index and refuse to
+                # trust the price/URL unless it still agrees, rather than
+                # silently attributing one hotel's price to another.
+                name_cascade = self.registry.get("booking.card_name")
+                reread_raw = await name_cascade.text(cards.nth(index), timeout=700)
+                reread_name = normalise_display(reread_raw) if reread_raw else None
+
+                if reread_name != matched_name:
+                    log.warning(
+                        "[%s] result order shifted between name-match and "
+                        "price read (matched %r at index %d, that index now "
+                        "shows %r) - discarding this attempt rather than "
+                        "risk pricing the wrong hotel",
+                        expected[:40], matched_name, index, reread_name,
+                    )
+                    return BookingResult(
+                        status=MatchStatus.ERROR,
+                        matched_name=matched_name,
+                        fuzzy_score=score,
+                        error=(
+                            f"card order shifted: matched {matched_name!r} at "
+                            f"index {index}, but that index now shows "
+                            f"{reread_name!r}"
+                        ),
+                    )
+
                 price = await self._extract_card_price(cards.nth(index))
 
                 if price is not None:

@@ -70,6 +70,106 @@ log = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Room-card "taxes and fees" suffix parsing
+# ---------------------------------------------------------------------------
+#
+# Verified live on the detail page ("Choose your room" section): every rate
+# card prints its own fee figure as a parenthetical suffix right next to the
+# per-night rate, e.g.:
+#
+#   "MAD 452 / night   10 nights, 1 room (+MAD 149 taxes and fees)"
+#
+# This is a much safer source for the fees figure than the checkout page's
+# label-row scan (_extract_by_label / _extract_local_fees below): the amount
+# is directly adjacent to its own label with nothing else nearby that could
+# be mistaken for it, whereas on the checkout page "taxes and fees" can
+# appear as a bare caption (e.g. "Includes taxes and fees") with no number of
+# its own, which previously caused the row-scan to walk up to the nearest
+# ancestor that DID have a number - the grand total - producing local_fees
+# values that were silently identical to final_price on every single row.
+_FEES_SUFFIX_RE_CACHE: dict[tuple[str, ...], "re.Pattern[str]"] = {}
+
+
+def _fees_suffix_pattern(labels: list[str]) -> Optional["re.Pattern[str]"]:
+    if not labels:
+        return None
+    key = tuple(labels)
+    cached = _FEES_SUFFIX_RE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    alternation = "|".join(re.escape(label) for label in labels)
+    # "+" then an optional currency token then the amount, immediately
+    # followed (allowing punctuation/whitespace) by one of the fee labels.
+    pattern = re.compile(
+        r"\+\s*([A-Za-z]{2,4}\.?\s*[\d][\d,. ]*\d|\d[\d,. ]*\d|\d+)"
+        r"\s*(?:" + alternation + r")",
+        re.IGNORECASE,
+    )
+    _FEES_SUFFIX_RE_CACHE[key] = pattern
+    return pattern
+
+
+def _parse_card_fees_hint(
+    card_text: str,
+    labels: list[str],
+    *,
+    default_currency: str,
+) -> Optional[float]:
+    """Pull the "(+MAD 149 taxes and fees)" style suffix off a rate card."""
+    if not card_text or not labels:
+        return None
+    pattern = _fees_suffix_pattern(labels)
+    if pattern is None:
+        return None
+    match = pattern.search(card_text)
+    if not match:
+        return None
+    parsed = parse_price(
+        match.group(1),
+        min_value=1.0,
+        max_value=200_000.0,
+        default_currency=default_currency,
+        strategy="first",
+    )
+    return parsed.amount_mad if parsed.ok else None
+
+
+def _resolve_local_fees(
+    *,
+    card_hint: Optional[float],
+    checkout_scan_value: Optional[float],
+    total_price: Optional[float],
+    log=None,
+) -> Optional[float]:
+    """
+    Decide the final ``local_fees`` value for a completed walk.
+
+    Priority: the room-card hint (unambiguous - see _parse_card_fees_hint)
+    always wins when present. Otherwise fall back to the checkout-page label
+    scan (_extract_local_fees), but reject it outright if it comes back
+    suspiciously close to the whole-stay total - a real "local fees" amount
+    can never legitimately equal (or nearly equal) the total, so a match
+    that close means the label scan latched onto the total's own container
+    rather than an actual fees line (the exact bug that made local_fees ==
+    final_price on every row before this fix).
+    """
+    if card_hint is not None:
+        return card_hint
+    if checkout_scan_value is None:
+        return None
+    if total_price and total_price > 0 and (checkout_scan_value / total_price) >= 0.9:
+        if log is not None:
+            log.debug(
+                "discarding local_fees %.2f - too close to total %.2f "
+                "(checkout-page label scan likely matched the total itself, "
+                "not a fees line)",
+                checkout_scan_value, total_price,
+            )
+        return None
+    return checkout_scan_value
+
+
+# ---------------------------------------------------------------------------
 # Payment-guard text normalisation
 # ---------------------------------------------------------------------------
 
@@ -264,7 +364,27 @@ class TunnelNavigator:
 
         if price is not None:
             result.final_price = price
-            result.local_fees = await self._extract_local_fees()
+
+            # Prefer the fee figure read straight off the room card on the
+            # detail page (unambiguous - see _parse_card_fees_hint above).
+            # Only fall back to the checkout-page label scan when the card
+            # didn't expose one, and even then, reject it outright if it
+            # comes back suspiciously close to the whole-stay total: a
+            # "local fees" figure can never legitimately equal the total,
+            # so a match that does is a mis-scrape (the row-scan latching
+            # onto the total's own container), not a real answer.
+            checkout_scan_value = (
+                None
+                if clicked_offer.local_fees_hint is not None
+                else await self._extract_local_fees()
+            )
+            result.local_fees = _resolve_local_fees(
+                card_hint=clicked_offer.local_fees_hint,
+                checkout_scan_value=checkout_scan_value,
+                total_price=price,
+                log=self.log,
+            )
+
             result.status = TunnelStatus.OK
             self.log.info(
                 "final payable price %.2f %s (room=%s, local fees=%s)",
@@ -478,6 +598,8 @@ class TunnelNavigator:
             await self.page.wait_for_timeout(500)
             count = await cards.count()
 
+        fee_labels = self.registry.strings("nuitee.tunnel.summary.local_fees_row_labels")
+
         offers: list[RoomOffer] = []
         for index in range(min(count, 40)):
             card = cards.nth(index)
@@ -485,9 +607,18 @@ class TunnelNavigator:
                 label = await name_cascade.text(card, timeout=700)
                 raw_price = await price_cascade.text(card, timeout=700)
 
+                # Always read the full card text too: this is what carries
+                # the "(+MAD 149 taxes and fees)" suffix (verified live -
+                # every rate card on the detail page prints its own taxes
+                # figure right next to the per-night rate, well before the
+                # checkout tunnel is entered). The dedicated price element
+                # matched above is usually scoped to just the per-night
+                # number and won't include this suffix.
+                full_card_text = await safe_text(card, timeout=700)
+
                 if raw_price is None:
                     # Fall back to the whole card's text.
-                    raw_price = await safe_text(card, timeout=700)
+                    raw_price = full_card_text
 
                 parsed = parse_price(
                     raw_price or "",
@@ -497,12 +628,19 @@ class TunnelNavigator:
                     strategy="min",   # cheapest figure inside the offer card
                 )
 
+                fees_hint = _parse_card_fees_hint(
+                    full_card_text or "",
+                    fee_labels,
+                    default_currency=self.settings.nuitee.currency,
+                )
+
                 offers.append(
                     RoomOffer(
                         label=normalise_display(label or f"Offer #{index + 1}"),
                         display_price=parsed.amount_mad,
                         currency=parsed.currency,
                         index=index,
+                        local_fees_hint=fees_hint,
                     )
                 )
             except Exception:

@@ -218,6 +218,13 @@ class RoomOffer:
     currency: str = "MAD"
     index: int = 0
     refundable: Optional[bool] = None
+    #: "Taxes and fees" figure read straight off THIS offer card's own text
+    #: (e.g. "10 nights, 1 room (+MAD 149 taxes and fees)") - present on the
+    #: detail page, before the checkout tunnel is even entered. Preferred
+    #: over the checkout-page label scan (TunnelNavigator._extract_local_fees)
+    #: because it is unambiguous: the amount sits right next to its own
+    #: label with no risk of a nearby unrelated total being picked up instead.
+    local_fees_hint: Optional[float] = None
 
     def __repr__(self) -> str:  # pragma: no cover - cosmetic
         return f"<RoomOffer #{self.index} {self.label[:32]!r} {self.display_price}>"
