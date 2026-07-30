@@ -424,7 +424,7 @@ class QualityGate:
             f"AVG(booking_price) AS avg_booking, "
             f"MIN(nuitee_final_price) AS min_nuitee, "
             f"MAX(nuitee_final_price) AS max_nuitee, "
-            f"AVG(nuitee_hidden_fees) AS avg_hidden_fees, "
+            f"AVG(nuitee_local_fees) AS avg_local_fees, "
             f"AVG(price_difference) AS avg_diff, "
             f"AVG(price_difference_pct) AS avg_diff_pct "
             f"FROM price_records WHERE is_clean = 1 "
@@ -438,7 +438,7 @@ class QualityGate:
                 "avg_booking_price": _round(row["avg_booking"]),
                 "min_nuitee_final_price": _round(row["min_nuitee"]),
                 "max_nuitee_final_price": _round(row["max_nuitee"]),
-                "avg_hidden_fees": _round(row["avg_hidden_fees"]),
+                "avg_local_fees": _round(row["avg_local_fees"]),
                 "avg_price_difference": _round(row["avg_diff"]),
                 "avg_price_difference_pct": _round(row["avg_diff_pct"]),
             }

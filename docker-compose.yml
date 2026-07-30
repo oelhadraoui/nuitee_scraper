@@ -45,10 +45,10 @@ x-scraper-base: &scraper-base
     resources:
       limits:
         cpus: "${CPU_LIMIT:-2.0}"
-        memory: ${MEM_LIMIT:-4G}
+        memory: ${MEM_LIMIT:-8G}
       reservations:
-        cpus: "1.0"
-        memory: 2G
+        cpus: "1.8"
+        memory: 8G
 
   logging:
     driver: "json-file"
@@ -70,7 +70,7 @@ services:
     profiles: ["offsets"]
     command: ["run", "--only-offset", "short", "--run-id", "short"]
 
-  # -- long offset only (~3 months out) -------------------------------------
+  # -- long offset only (~3/2 months out) -------------------------------------
   offset-long:
     <<: *scraper-base
     container_name: nuitee_offset_long

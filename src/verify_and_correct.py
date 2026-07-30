@@ -50,7 +50,6 @@ from src.models import (
     SearchWindow,
     TunnelResult,
     TunnelStatus,
-    compute_hidden_fees,
     format_rooms_config,
     parse_rooms_config,
 )
@@ -372,11 +371,8 @@ class Verifier:
 
             nuitee_display_price=tunnel.display_price,
             nuitee_final_price=tunnel.final_price,
-            nuitee_hidden_fees=tunnel.local_fees
-            if tunnel.local_fees is not None
-            else compute_hidden_fees(
-                tunnel.final_price, tunnel.display_price, window.nights
-            ),
+            # Scraped only - None when the site's "Local fees" line
+            # couldn't be found for this hotel, never an estimate.
             nuitee_local_fees=tunnel.local_fees,
             nuitee_room_label=tunnel.room_label,
             tunnel_status=tunnel.status.value,

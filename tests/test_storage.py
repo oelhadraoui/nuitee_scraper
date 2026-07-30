@@ -258,12 +258,12 @@ class TestExport:
         """
         ``nuitee_local_fees`` (the real "Local fees" figure scraped off the
         booking page) must survive add -> flush -> CSV export intact, with
-        its own dedicated, clearly-labelled column - distinct from the older
-        ``nuitee_hidden_fees`` estimate.
+        its own dedicated, clearly-labelled column. There is no separate
+        estimated-fees column any more - an older ``nuitee_hidden_fees``
+        column filled the gap with an estimate when scraping failed, but
+        that column was removed rather than kept as a fallback.
         """
-        await store.add(
-            make_record("Fee Hotel", nuitee_local_fees=145.25, nuitee_hidden_fees=145.25)
-        )
+        await store.add(make_record("Fee Hotel", nuitee_local_fees=145.25))
         await store.flush()
 
         path = await store.export_csv()

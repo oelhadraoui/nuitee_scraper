@@ -91,7 +91,7 @@ def estimate_volume(
     Rough volume projection, so you can size the run before starting it.
 
     Every city produces ``n_offsets x n_durations`` search windows (offsets
-    from today, e.g. short ~1 week and long ~3 months; durations, e.g. 3 and
+    from today, e.g. short ~1 week and long ~3/2 months; durations, e.g. 3 and
     10 nights) - not a sweep of simulated scraping dates, so the count stays
     small and predictable regardless of how wide the offsets are.
     """

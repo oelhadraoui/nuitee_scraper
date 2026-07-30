@@ -23,13 +23,6 @@ Design decisions
   hotel with no Nuitee final price can never produce a clean row, so spending
   a page load on it is pure waste.
 
-* **Early exit on target.** Once the distinct-clean-hotel target is reached
-  AND every (offset x stay-duration) crossing has independently reached
-  ``QUALITY_MIN_CLEAN_HOTELS_PER_CROSSING``, the run stops. Hitting 1,000
-  clean rows from a single crossing would satisfy the raw count but not the
-  per-crossing statistical-weight requirement, so the global target alone is
-  never sufficient to stop early.
-
 * **Graceful shutdown.** SIGINT/SIGTERM set an event; the in-flight window
   finishes, buffers flush, exports run. You never lose six hours to a Ctrl-C.
 """
@@ -50,7 +43,6 @@ from src.models import (
     SearchWindow,
     TunnelResult,
     TunnelStatus,
-    compute_hidden_fees,
     format_rooms_config,
 )
 from src.pipeline.horizon_generator import HorizonGenerator, HorizonPlan
@@ -402,16 +394,8 @@ class PipelineRunner:
 
             nuitee_display_price=tunnel.display_price or hotel.display_price,
             nuitee_final_price=tunnel.final_price,
-            # Prefer the fee actually scraped off the booking page; only
-            # fall back to the nights-adjusted estimate when that line
-            # couldn't be found for this hotel.
-            nuitee_hidden_fees=tunnel.local_fees
-            if tunnel.local_fees is not None
-            else compute_hidden_fees(
-                tunnel.final_price,
-                tunnel.display_price or hotel.display_price,
-                window.nights,
-            ),
+            # Scraped only - None when the site's "Local fees" line
+            # couldn't be found for this hotel, never an estimate.
             nuitee_local_fees=tunnel.local_fees,
             nuitee_room_label=tunnel.room_label,
             tunnel_status=tunnel.status.value

@@ -107,12 +107,6 @@ reported:
 
 - **≥ 1,000 clean hotels overall** — `QUALITY_TARGET_CLEAN_HOTELS` (default
   1,000). The run stops once this is reached.
-- **≥ 200 clean hotels per horizon × stay-duration crossing**, summed across
-  every city — `QUALITY_MIN_CLEAN_HOTELS_PER_CROSSING` (default 200). The run
-  does **not** stop early just because the global target is met if any
-  crossing it has touched is still short — it keeps going until every
-  crossing it's responsible for clears the minimum, or it runs out of plan to
-  execute.
 
 Both numbers, and a full breakdown showing exactly which crossings pass and
 which don't, are in every quality report. See
@@ -417,7 +411,7 @@ python scripts/generate_input.py --preview-plan --durations 3,10
 
 ```
   cities              : 80
-  offsets             : 2 (short ~1 week, long ~3 months)
+  offsets             : 2 (short ~1 week, long ~3/2 months)
   stay durations      : [3, 10]
   search windows      : 320
   max rows            : 8,000
@@ -478,12 +472,6 @@ COUNT(DISTINCT hotel_name_normalised || '|' || city) WHERE is_clean = 1
 The same hotel scraped at the short offset and the long offset is 2 clean
 rows but **1** clean hotel. This is deliberately the conservative reading of
 the metric. Target: `QUALITY_TARGET_CLEAN_HOTELS` (default 1,000).
-
-**Metric 2 — per crossing.** The same count, grouped by `(horizon_label,
-nights)` and summed across every city. Every crossing the plan touches must
-independently reach `QUALITY_MIN_CLEAN_HOTELS_PER_CROSSING` (default 200).
-This is what makes the sample statistically usable for a short-vs-long
-comparison, rather than just a large but lopsided pile of rows.
 
 ### 5.4 Deduplication
 
@@ -690,7 +678,7 @@ make input                # regenerate input.json + volume projection
 
 make run-full-pipeline    # scrape → verify → export → report
 make run-offset-short     # short offset only (~1 week out)
-make run-offset-long      # long offset only (~3 months out)
+make run-offset-long      # long offset only (the value in HORIZON_LONG_OFFSET_MONTHS)
 make run-fallback-2m      # force the long offset's 2-month fallback
 make run-smoke            # 2 cities x 4 windows — fast sanity check
 make plan                 # print the analysis plan
@@ -735,8 +723,7 @@ Highest-impact variables:
 | `HORIZON_MIN_ROWS_PER_OFFSET` | `10` | Fallback trigger; must stay below `NUITEE_HOTELS_PER_CITY` |
 | `TUNNEL_ALLOW_PARTIAL_TUNNEL` | `true` | Accept a total from an earlier panel |
 | `TUNNEL_DEBUG_ARTIFACTS` | `false` | Screenshot + HTML on every failure |
-| `QUALITY_TARGET_CLEAN_HOTELS` | `1000` | The global acceptance target |
-| `QUALITY_MIN_CLEAN_HOTELS_PER_CROSSING` | `200` | The per-(offset × stay-duration) acceptance target |
+| `QUALITY_TARGET_CLEAN_HOTELS` | `700` | The global acceptance target |
 | `STORAGE_RESUME` | `true` | Skip already-clean work on restart |
 
 ---

@@ -73,6 +73,11 @@ class FakeNuitee:
                     status=TunnelStatus.OK,
                     final_price=(hotel.display_price or 0) * window.nights + 250.0,
                     display_price=hotel.display_price,
+                    # The site's own scraped "Local fees" figure - distinct
+                    # from the 250.0 baked into final_price above (which
+                    # represents whatever OTHER gap the total has, e.g.
+                    # extra nights/rounding) so the two are never confused.
+                    local_fees=25.0,
                     room_label="Standard Double",
                     panels_visited=["room_select", "guest_details", "summary"],
                     deepest_panel="summary",
@@ -127,11 +132,12 @@ class TestOrchestration:
 
         # Successful tunnel rows carry the FINAL payable price for the whole
         # stay (nights=3 for this window), not the per-night display price,
-        # and record the nights-aware hidden-fee delta.
+        # and the scraped local_fees figure passes through unchanged - there
+        # is no estimate fallback to confuse it with.
         alpha = by_name["Hotel Alpha"]
         assert alpha["nuitee_final_price"] == pytest.approx(900.0 * 3 + 250.0)
         assert alpha["nuitee_display_price"] == pytest.approx(900.0)
-        assert alpha["nuitee_hidden_fees"] == pytest.approx(250.0)
+        assert alpha["nuitee_local_fees"] == pytest.approx(25.0)
         assert alpha["is_clean"] == 1
         assert alpha["tunnel_deepest_panel"] == "summary"
         assert alpha["tunnel_panels_visited"] == (

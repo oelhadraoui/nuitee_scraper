@@ -461,6 +461,17 @@ booking:
     - 'no availability for'
     - 'we have no availability'
     - 'try changing your dates'
+    # Live-verified current phrasing (2026-07): the property card itself
+    # reads "This property is unavailable on our site for your dates", and
+    # the expanded panel reads "Unavailable on our site for your selected
+    # dates" - neither is covered by the older markers above, which is why
+    # a stale/unavailable card was slipping past _is_unavailable() and
+    # having a price read from it (live-diagnosed via FIVE Zurich -
+    # Luxury City Resort, which is unavailable for the searched dates but
+    # still has a nearby "similar properties" carousel with real prices
+    # for OTHER hotels that the fuzzy matcher scored highly by mistake).
+    - 'unavailable on our site'
+    - 'unavailable for your selected dates'
 
   captcha_markers:
     - 'unusual traffic'

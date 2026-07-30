@@ -156,11 +156,13 @@ def compute_hidden_fees(
     nights: int,
 ) -> Optional[float]:
     """
-    FALLBACK ONLY. Prefer the scraped ``TunnelResult.local_fees`` (the site's
-    own "Local fees" / "taxes and fees" line, read directly off the booking
-    page - see ``TunnelNavigator._extract_local_fees``). This function is
-    an *estimate* used only when that line couldn't be scraped for a given
-    hotel, kept for backward compatibility and as a sanity cross-check.
+    NOT used to populate the CSV (see ``PriceRecord.nuitee_local_fees``,
+    which is scraped-or-null, never estimated - a prior "nuitee_hidden_fees"
+    column used this function as a fallback when the real figure couldn't
+    be scraped, but that estimate silently inherited any upstream price
+    error and the column was removed rather than kept as a fallback).
+    Retained as a documented, tested utility for ad-hoc/offline sanity
+    cross-checks only.
 
     The true stay-level fees Nuitee's per-night listing price doesn't show.
 
@@ -271,9 +273,9 @@ class TunnelResult:
 
         NOT nights-adjusted - for a multi-night stay this is NOT the true
         fee amount (it also bundles in every extra night's room cost). Kept
-        for diagnostics/backward compatibility; the CSV's "Nuitee Hidden
-        Fees" column is computed correctly, per-night-aware, by
-        :func:`compute_hidden_fees` at record-assembly time instead.
+        for diagnostics only. The CSV's "Nuitee Local Fees" column is the
+        real figure - scraped directly off the booking page (``local_fees``
+        above), never derived from this property.
         """
         if self.final_price is None or self.display_price is None:
             return None
@@ -339,7 +341,13 @@ class PriceRecord:
     # --- Nuitee ------------------------------------------------------------
     nuitee_display_price: Optional[float] = None
     nuitee_final_price: Optional[float] = None
-    nuitee_hidden_fees: Optional[float] = None
+    #: The site's own "Local fees" / "taxes and fees" figure, scraped
+    #: directly (TunnelNavigator._extract_local_fees / the room-card fee
+    #: hint) - None when it couldn't be found, never an estimate. An
+    #: earlier "nuitee_hidden_fees" column filled that gap with
+    #: final_price - display_price*nights when scraping failed, but that
+    #: estimate was unreliable (it silently inherited any upstream price
+    #: error) and the column was removed rather than kept as a fallback.
     nuitee_local_fees: Optional[float] = None
     nuitee_room_label: Optional[str] = None
     tunnel_status: str = TunnelStatus.NOT_ATTEMPTED.value
@@ -425,7 +433,6 @@ CSV_COLUMNS: list[str] = [
     "rooms",
     "nuitee_display_price",
     "nuitee_final_price",
-    "nuitee_hidden_fees",
     "nuitee_local_fees",
     "nuitee_room_label",
     "tunnel_status",
@@ -456,7 +463,6 @@ CSV_HEADER_ALIASES: dict[str, str] = {
     "rooms": "Rooms",
     "nuitee_display_price": "Nuitee Display Price (MAD, per night)",
     "nuitee_final_price": "Nuitee Final Payable (MAD, whole stay)",
-    "nuitee_hidden_fees": "Nuitee Hidden Fees (MAD, whole stay, estimated)",
     "nuitee_local_fees": "Nuitee Local Fees (MAD, scraped)",
     "nuitee_room_label": "Nuitee Room",
     "tunnel_status": "Tunnel Status",

@@ -254,17 +254,35 @@ class BookingScraper:
                 # property. Re-read the name at this index and refuse to
                 # trust the price/URL unless it still agrees, rather than
                 # silently attributing one hotel's price to another.
+                #
+                # NOTE: this must be a FUZZY comparison, not exact string
+                # equality. Live logs showed constant false positives like
+                # matched_name="Hotel Majestic Opens in new window" vs
+                # reread_name="Hotel Majestic" - the exact same property,
+                # just with an accessibility-only "Opens in new window"
+                # label included in one read and not the other (the
+                # card_name selector cascade has several candidates, e.g.
+                # a wrapping <a data-testid="title-link"> vs the narrower
+                # [data-testid="property-card-name"], and which one wins
+                # can differ between two independent reads of the same
+                # index). Exact equality treated every one of these as a
+                # "wrong hotel" and discarded a good match - which is what
+                # actually was causing very slow, retry-heavy runs, not a
+                # deeper bug. fuzzy_score already exists precisely to
+                # tolerate this kind of incidental padding (it's what the
+                # original name match uses), so reuse it here instead.
                 name_cascade = self.registry.get("booking.card_name")
                 reread_raw = await name_cascade.text(cards.nth(index), timeout=700)
                 reread_name = normalise_display(reread_raw) if reread_raw else None
+                agreement = fuzzy_score(matched_name or "", reread_name or "")
 
-                if reread_name != matched_name:
+                if agreement < self._cfg.fuzzy_threshold_strict:
                     log.warning(
                         "[%s] result order shifted between name-match and "
                         "price read (matched %r at index %d, that index now "
-                        "shows %r) - discarding this attempt rather than "
-                        "risk pricing the wrong hotel",
-                        expected[:40], matched_name, index, reread_name,
+                        "shows %r, agreement=%.0f) - discarding this attempt "
+                        "rather than risk pricing the wrong hotel",
+                        expected[:40], matched_name, index, reread_name, agreement,
                     )
                     return BookingResult(
                         status=MatchStatus.ERROR,
@@ -273,8 +291,22 @@ class BookingScraper:
                         error=(
                             f"card order shifted: matched {matched_name!r} at "
                             f"index {index}, but that index now shows "
-                            f"{reread_name!r}"
+                            f"{reread_name!r} (agreement {agreement:.0f})"
                         ),
+                    )
+
+                if await self._card_is_unavailable(cards.nth(index)):
+                    log.debug(
+                        "[%s] matched card %r is itself marked unavailable "
+                        "for these dates - not reading a price from it",
+                        expected[:40], matched_name,
+                    )
+                    return BookingResult(
+                        status=MatchStatus.NO_RESULTS,
+                        matched_name=matched_name,
+                        fuzzy_score=score,
+                        url=final_url,
+                        error="matched card marked unavailable for these dates",
                     )
 
                 price = await self._extract_card_price(cards.nth(index))
@@ -454,6 +486,35 @@ class BookingScraper:
         except Exception:
             return False
         return any(marker.lower() in body for marker in self._no_avail_markers)
+
+    async def _card_is_unavailable(self, card) -> bool:
+        """
+        Same marker scan as ``_is_unavailable``, but scoped to ONE matched
+        card rather than the whole page.
+
+        This matters because Booking shows "similar properties" / "you
+        might also like" carousels right next to an unavailable primary
+        result, all on the same page, each with real prices for OTHER
+        hotels. ``_is_unavailable`` alone only guards the fallback path
+        taken when no card clears the fuzzy threshold - but the primary
+        result's own card (or the property's own name matching a
+        carousel card written for a different offer) can still score
+        above threshold and reach price extraction, at which point a
+        whole-page check never runs at all. Live-diagnosed via FIVE
+        Zurich - Luxury City Resort: its card read "This property is
+        unavailable on our site for your dates", scored 100 against
+        itself as expected, and a price was still read from within/near
+        that same unavailable card - producing a Booking "price" nearly
+        5x the real total for that stay. Checking THIS card's own text
+        before trusting its price closes that gap.
+        """
+        if not self._no_avail_markers:
+            return False
+        try:
+            text = (await card.inner_text(timeout=2_000)).lower()
+        except Exception:
+            return False
+        return any(marker.lower() in text for marker in self._no_avail_markers)
 
     # ======================================================================
     # Matching

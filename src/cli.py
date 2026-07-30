@@ -77,7 +77,7 @@ def build_parser() -> argparse.ArgumentParser:
             "--only-offset", default="all", choices=["short", "long", "all"],
             help=(
                 "Which offset(s) to run: 'short' (~1 week out), "
-                "'long' (~3 months out), or 'all' (default)"
+                "'long' (~3/2 months out), or 'all' (default)"
             ),
         )
         sp.add_argument(

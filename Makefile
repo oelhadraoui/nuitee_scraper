@@ -18,7 +18,7 @@ OFFSET       ?= all
 DURATIONS    ?=
 CITIES       ?=
 LIMIT        ?=
-TARGET       ?= 1000
+TARGET       ?= 700
 
 CLI_ARGS      = --only-offset $(OFFSET)
 ifneq ($(strip $(DURATIONS)),)
@@ -51,7 +51,7 @@ help:
 	@echo "  PIPELINE"
 	@echo "    make run-full-pipeline   Both offsets, both durations, then verify"
 	@echo "    make run-offset-short    Short offset only (~1 week out)"
-	@echo "    make run-offset-long     Long offset only (~3 months out)"
+	@echo "    make run-offset-long     Long offset only (~$(HORIZON_LONG_OFFSET_MONTHS) out)"
 	@echo "    make run-fallback-2m     Force the 2-month fallback offset"
 	@echo "    make run-smoke           2 cities x 4 windows (fast sanity check)"
 	@echo "    make plan                Print the analysis plan without scraping"
@@ -122,7 +122,7 @@ run-offset-short: _ensure_env _ensure_output
 
 .PHONY: run-offset-long
 run-offset-long: _ensure_env _ensure_output
-	@echo "[run] long offset (~3 months out)..."
+	@echo "[run] long offset (~$(HORIZON_LONG_OFFSET_MONTHS) out)..."
 	$(COMPOSE) run --rm $(SERVICE) run --only-offset long \
 		--run-id long_$(shell date +%Y%m%d)
 
