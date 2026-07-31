@@ -179,6 +179,20 @@ class TimeoutSettings(BaseSettings):
     search_btn_visible: int = 4_000
     after_search_click: int = 2_500
     post_search: int = 8_000
+    # How long to wait for the URL to gain a real dest_id after clicking
+    # Search (see the stale-deep-link bug in src/scrapers/booking.py).
+    # Was hardcoded at 6_000 directly in booking.py - too tight once
+    # BOOKING_CONCURRENCY > ~2 puts several headless Chromium contexts
+    # in real contention for the same CPU/network, live-diagnosed via a
+    # production run where ~60% of otherwise-correct, perfect-name-match
+    # (fuzzy_score=100) lookups came back NO_RESULTS: the destination
+    # resolution navigation was simply still in flight when the 6s wait
+    # gave up, so the code fell back to reading the cold, unresolved
+    # page - which always renders a fake "unavailable" placeholder card
+    # under the correct name. Bumped to comfortably exceed post_search,
+    # and now configurable (TIMEOUT_DEST_ID_RESOLVE) instead of a magic
+    # number, matching every other wait budget in this module.
+    dest_id_resolve: int = 12_000
 
 
 # ---------------------------------------------------------------------------

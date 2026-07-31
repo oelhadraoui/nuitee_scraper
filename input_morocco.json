@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "generated_at": "2026-07-31",
+  "note": "Dates are derived at runtime from today's date plus the configured offsets (short ~1 week, long ~3 months). Do not hard-code them here.",
+  "rooms_config": [
+    2
+  ],
+  "cities": [
+    "Casablanca",
+    "Marrakech",
+    "Rabat",
+    "Tangier",
+    "Agadir",
+    "Fes",
+    "Essaouira",
+    "Meknes",
+    "Chefchaouen",
+    "Ouarzazate",
+    "Dakhla",
+    "El Jadida",
+    "Ifrane",
+    "Oujda",
+    "Tetouan",
+    "Nador",
+    "Saidia",
+    "Merzouga",
+    "Taghazout",
+    "Asilah"
+  ]
+}

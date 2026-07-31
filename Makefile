@@ -97,14 +97,14 @@ input:
 	$(PYTHON) scripts/generate_input.py --preview-plan
 
 .PHONY: doctor
-doctor: _ensure_env _ensure_output
+doctor: _ensure_env _ensure_output _ensure_input
 	$(COMPOSE) run --rm $(SERVICE) doctor
 
 # ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
 .PHONY: run-full-pipeline
-run-full-pipeline: _ensure_env _ensure_output
+run-full-pipeline: _ensure_env _ensure_output _ensure_input
 	@echo "[pipeline] 1/3 scraping both offsets, both stay durations..."
 	$(COMPOSE) run --rm $(SERVICE) run --only-offset all --target $(TARGET)
 	@echo "[pipeline] 2/3 repairing incomplete rows..."
@@ -115,29 +115,29 @@ run-full-pipeline: _ensure_env _ensure_output
 	@echo "[pipeline] complete. Results in $(OUTPUT)/"
 
 .PHONY: run-offset-short
-run-offset-short: _ensure_env _ensure_output
+run-offset-short: _ensure_env _ensure_output _ensure_input
 	@echo "[run] short offset (~1 week out)..."
 	$(COMPOSE) run --rm $(SERVICE) run --only-offset short \
 		--run-id short_$(shell date +%Y%m%d)
 
 .PHONY: run-offset-long
-run-offset-long: _ensure_env _ensure_output
+run-offset-long: _ensure_env _ensure_output _ensure_input
 	@echo "[run] long offset (~$(HORIZON_LONG_OFFSET_MONTHS) out)..."
 	$(COMPOSE) run --rm $(SERVICE) run --only-offset long \
 		--run-id long_$(shell date +%Y%m%d)
 
 .PHONY: run-fallback-2m
-run-fallback-2m: _ensure_env _ensure_output
+run-fallback-2m: _ensure_env _ensure_output _ensure_input
 	@echo "[run] forcing the long offset's 2-month fallback..."
 	$(COMPOSE) run --rm $(SERVICE) run --only-offset long \
 		--durations "$(DURATIONS)"
 
 .PHONY: run
-run: _ensure_env _ensure_output
+run: _ensure_env _ensure_output _ensure_input
 	$(COMPOSE) run --rm $(SERVICE) run $(CLI_ARGS)
 
 .PHONY: run-smoke
-run-smoke: _ensure_env _ensure_output
+run-smoke: _ensure_env _ensure_output _ensure_input
 	@echo "[smoke] 2 cities, 4 windows, 5 hotels each..."
 	$(COMPOSE) run --rm $(SERVICE) run \
 		--cities "Casablanca,Marrakech" --only-offset all \
@@ -145,7 +145,7 @@ run-smoke: _ensure_env _ensure_output
 		--run-id smoke_$(shell date +%Y%m%d_%H%M%S)
 
 .PHONY: start
-start: _ensure_env _ensure_output
+start: _ensure_env _ensure_output _ensure_input
 	$(COMPOSE) up -d $(SERVICE)
 	$(COMPOSE) logs -f $(SERVICE)
 
@@ -157,35 +157,35 @@ plan:
 # Quality
 # ---------------------------------------------------------------------------
 .PHONY: verify
-verify: _ensure_output
+verify: _ensure_output _ensure_input
 	$(COMPOSE) run --rm $(SERVICE) verify --mode all --export
 
 .PHONY: verify-tunnel
-verify-tunnel: _ensure_output
+verify-tunnel: _ensure_output _ensure_input
 	$(COMPOSE) run --rm $(SERVICE) verify --mode tunnel $(if $(LIMIT),--limit $(LIMIT),)
 
 .PHONY: verify-booking
-verify-booking: _ensure_output
+verify-booking: _ensure_output _ensure_input
 	$(COMPOSE) run --rm $(SERVICE) verify --mode booking $(if $(LIMIT),--limit $(LIMIT),)
 
 .PHONY: verify-dry
-verify-dry: _ensure_output
+verify-dry: _ensure_output _ensure_input
 	$(COMPOSE) run --rm $(SERVICE) verify --mode all --dry-run
 
 .PHONY: report
-report: _ensure_output
+report: _ensure_output _ensure_input
 	$(COMPOSE) run --rm $(SERVICE) report
 
 .PHONY: export
-export: _ensure_output
+export: _ensure_output _ensure_input
 	$(COMPOSE) run --rm $(SERVICE) export
 
 .PHONY: export-clean
-export-clean: _ensure_output
+export-clean: _ensure_output _ensure_input
 	$(COMPOSE) run --rm $(SERVICE) export --clean-only
 
 .PHONY: export-parquet
-export-parquet: _ensure_output
+export-parquet: _ensure_output _ensure_input
 	$(COMPOSE) run --rm $(SERVICE) export --parquet
 
 # ---------------------------------------------------------------------------
@@ -251,3 +251,32 @@ _ensure_env:
 .PHONY: _ensure_output
 _ensure_output:
 	@mkdir -p $(OUTPUT)
+	@# The container writes here as the "scraper" user, whose UID/GID were
+	@# baked into the image the last time it was BUILT (see docker-compose.yml's
+	@# build.args: UID/GID). If that build happened under a different UID than
+	@# whoever is running `make` right now (built via sudo, built by a teammate,
+	@# a stale cached image from before your shell exported UID/GID, WSL/Docker
+	@# Desktop UID remapping, ...), a freshly-created ./output is owned by YOU
+	@# but the container's internal user still can't write into it - the classic
+	@# first-run "PermissionError: [Errno 13] ... /app/output/scraper.log".
+	@# Rather than chase every environment's UID alignment, just make sure the
+	@# mount is writable by anyone; this is what fixes it if you've ever had to
+	@# manually `chmod 777 output` to get `make doctor` working.
+	@chmod -R 777 $(OUTPUT) 2>/dev/null || true
+
+.PHONY: _ensure_input
+_ensure_input:
+	@# docker-compose.yml bind-mounts input_morocco.json / input_international.json
+	@# by name (see README §3). A bind mount's SOURCE has to exist on the host
+	@# before Compose starts the container, or the mount point gets filled in
+	@# with an empty directory instead of the real file - which is exactly what
+	@# produces "Input file not found: input_international.json" even when the
+	@# file is sitting right there: it existed a moment too late for THIS
+	@# particular container start. Generating both up front, once, idempotently,
+	@# means every `make` target always has real files to mount, whether or
+	@# not this particular run intends to use them.
+	@test -f input_morocco.json || \
+		$(PYTHON) scripts/generate_input.py --preset morocco --output input_morocco.json >/dev/null
+	@test -f input_international.json || \
+		$(PYTHON) scripts/generate_input.py --preset europe --preset mena --preset world \
+			--output input_international.json >/dev/null

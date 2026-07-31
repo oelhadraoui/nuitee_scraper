@@ -313,6 +313,35 @@ class BookingResult:
 
 
 # ---------------------------------------------------------------------------
+# National (Morocco) vs. International classification
+# ---------------------------------------------------------------------------
+
+#: Cities treated as domestic Morocco ("National") market vs. everything
+#: else ("International"). Mirrors scripts/generate_input.py's "morocco"
+#: preset city list exactly. Kept as its own constant here (rather than
+#: importing that script) so scripts/generate_input.py stays a
+#: zero-dependency standalone script that runs the same whether invoked on
+#: the host (``make input``) or inside the container - if you add/remove a
+#: Moroccan city in one place, update the other.
+MOROCCO_CITIES: frozenset[str] = frozenset(
+    c.lower()
+    for c in (
+        "Casablanca", "Marrakech", "Rabat", "Tangier", "Agadir", "Fes",
+        "Essaouira", "Meknes", "Chefchaouen", "Ouarzazate", "Dakhla",
+        "El Jadida", "Ifrane", "Oujda", "Tetouan", "Nador", "Saidia",
+        "Merzouga", "Taghazout", "Asilah",
+    )
+)
+
+
+def market_scope_for(city: str) -> str:
+    """"National (Morocco)" for a Morocco city, else "International"."""
+    if (city or "").strip().lower() in MOROCCO_CITIES:
+        return "National (Morocco)"
+    return "International"
+
+
+# ---------------------------------------------------------------------------
 # The unified output row
 # ---------------------------------------------------------------------------
 
@@ -363,6 +392,9 @@ class PriceRecord:
     booking_url: Optional[str] = None
 
     # --- derived -----------------------------------------------------------
+    #: "National (Morocco)" or "International" - recomputed from `city`
+    #: by compute_derived(), never set explicitly.
+    market_scope: str = ""
     price_difference: Optional[float] = None
     price_difference_pct: Optional[float] = None
     cheaper_platform: Optional[str] = None
@@ -379,6 +411,7 @@ class PriceRecord:
 
     def compute_derived(self) -> "PriceRecord":
         """Recompute the comparison columns from the two prices."""
+        self.market_scope = market_scope_for(self.city)
         n, b = self.nuitee_final_price, self.booking_price
         if n is not None and b is not None and n > 0:
             self.price_difference = round(b - n, 2)
@@ -425,6 +458,7 @@ class PriceRecord:
 CSV_COLUMNS: list[str] = [
     "hotel_name",
     "city",
+    "market_scope",
     "checkin",
     "checkout",
     "nights",
@@ -455,6 +489,7 @@ CSV_COLUMNS: list[str] = [
 CSV_HEADER_ALIASES: dict[str, str] = {
     "hotel_name": "Hotel Name",
     "city": "City",
+    "market_scope": "Market Scope",
     "checkin": "Check-in",
     "checkout": "Check-out",
     "nights": "Nights",

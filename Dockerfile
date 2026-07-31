@@ -78,6 +78,14 @@ COPY --chown=${UID}:${GID} src/     ./src/
 COPY --chown=${UID}:${GID} config/  ./config/
 COPY --chown=${UID}:${GID} scripts/ ./scripts/
 COPY --chown=${UID}:${GID} input.json ./input.json
+# Opportunistic: also bakes in input_morocco.json / input_international.json
+# (see README §3 / scripts/generate_input.py --preset) if either already
+# existed in the build context. The glob always matches at least
+# input.json above, so this can never fail the build even when neither
+# split file exists yet - it's a fallback for non-Compose `docker run`
+# usage; docker-compose.yml's own bind mounts are what matter for the
+# normal `make`/`docker compose run` path, and override this at runtime.
+COPY --chown=${UID}:${GID} input*.json ./
 
 RUN mkdir -p /app/output && chown -R ${UID}:${GID} /app/output /app
 

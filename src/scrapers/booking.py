@@ -57,6 +57,32 @@ the top one) when the plain click doesn't produce a ``dest_id``; if that
 still doesn't resolve, the property is most likely absent from Booking's
 index under this name, and the row is correctly left unmatched rather than
 attributed to a random nearby hotel.
+
+The "verification itself races the thing it's verifying" bug (live-diagnosed, 2026-07)
+----------------------------------------------------------------------------------------
+A production run showed ~60% of lookups coming back ``NO_RESULTS`` at a
+*perfect* ``fuzzy_score`` of 100 - including flagship chain hotels (Marriott,
+Fairmont, Hilton, Barceló) that are certainly bookable months out. That
+combination (exact name match, but no price) only comes from one branch:
+``_card_is_unavailable()`` reading "unavailable on our site" off the matched
+card itself. Live reproduction confirmed why: cold-loaded, Booking renders a
+fake "unavailable" placeholder under the searched property's exact name (see
+above); clicking Search resolves a real ``dest_id`` and the SAME hotel
+reappears fully bookable with a real price. ``_wait_for_dest_id()`` is
+supposed to catch exactly this by confirming the URL actually gained a
+``dest_id`` before trusting the page - but it was waiting a hardcoded 6
+seconds, less than this module's own ``post_search`` budget (8s) for the
+page to settle *after* that. Under real ``BOOKING_CONCURRENCY`` (several
+headless Chromium contexts sharing one host's CPU/network), the resolving
+navigation routinely took longer than 6s without actually failing - so the
+verification timed out on a resolution that was simply still in flight,
+and the code fell back to reading the cold, unresolved, always-"unavailable"
+page as if it were live. Fixed two ways: the wait is now a configurable
+``settings.timeouts.dest_id_resolve`` (12s, comfortably past ``post_search``)
+instead of a magic number; and as a second layer, if the destination never
+did verifiably resolve, an "unavailable" reading off that page is no longer
+trusted as a terminal result - it comes back ``ERROR`` (retried) rather than
+``NO_RESULTS`` (accepted as final).
 """
 
 from __future__ import annotations
@@ -88,6 +114,46 @@ __all__ = ["BookingBlockedError", "BookingScraper"]
 
 class BookingBlockedError(RuntimeError):
     """Booking.com served a captcha / bot-check page."""
+
+
+def _unavailable_card_outcome(
+    *, resolved: bool, matched_name: Optional[str], score: float, final_url: str
+) -> BookingResult:
+    """
+    Decide the terminal status for a matched card that reads "unavailable".
+
+    Only trusted as a real, terminal ``NO_RESULTS`` when the destination was
+    actually verified as resolved (a ``dest_id`` was confirmed in the URL -
+    see ``_resolve_destination``). When it was NOT resolved, this reading is
+    very likely the cold, stale placeholder card described in the module
+    docstring's "stale-deep-link bug" - it always shows a perfect name match
+    and always claims unavailability, regardless of real inventory. Rather
+    than accept that as final, this returns ``ERROR`` so the outer retry
+    loop in ``lookup()`` gives it another attempt.
+
+    Live-diagnosed 2026-07: this exact combination (fuzzy_score=100,
+    NO_RESULTS, destination never resolved) accounted for ~60% of lookups in
+    a production run, including flagship chain hotels (Marriott, Fairmont,
+    Hilton, Barceló) confirmed live to be genuinely bookable.
+    """
+    if not resolved:
+        return BookingResult(
+            status=MatchStatus.ERROR,
+            matched_name=matched_name,
+            fuzzy_score=score,
+            error=(
+                "matched card read unavailable but destination was never "
+                "confirmed resolved - likely a stale placeholder, not a "
+                "real result"
+            ),
+        )
+    return BookingResult(
+        status=MatchStatus.NO_RESULTS,
+        matched_name=matched_name,
+        fuzzy_score=score,
+        url=final_url,
+        error="matched card marked unavailable for these dates",
+    )
 
 
 class BookingScraper:
@@ -297,16 +363,15 @@ class BookingScraper:
 
                 if await self._card_is_unavailable(cards.nth(index)):
                     log.debug(
-                        "[%s] matched card %r is itself marked unavailable "
-                        "for these dates - not reading a price from it",
-                        expected[:40], matched_name,
+                        "[%s] matched card %r reads unavailable "
+                        "(destination resolved=%s)",
+                        expected[:40], matched_name, resolved,
                     )
-                    return BookingResult(
-                        status=MatchStatus.NO_RESULTS,
+                    return _unavailable_card_outcome(
+                        resolved=resolved,
                         matched_name=matched_name,
-                        fuzzy_score=score,
-                        url=final_url,
-                        error="matched card marked unavailable for these dates",
+                        score=score,
+                        final_url=final_url,
                     )
 
                 price = await self._extract_card_price(cards.nth(index))
@@ -459,8 +524,18 @@ class BookingScraper:
         await submit.click(page, timeout=self._t.search_btn_visible)
         return await self._wait_for_dest_id(page)
 
-    async def _wait_for_dest_id(self, page: Page, timeout: int = 6_000) -> bool:
-        """True once the URL carries a real, server-resolved destination."""
+    async def _wait_for_dest_id(self, page: Page, timeout: Optional[int] = None) -> bool:
+        """True once the URL carries a real, server-resolved destination.
+
+        Default timeout is ``settings.timeouts.dest_id_resolve`` (12s), not
+        a hardcoded value - this wait races against real Booking.com
+        navigation latency, which gets materially worse under concurrent
+        load (``BOOKING_CONCURRENCY`` > 1). Too tight here silently falls
+        back to reading the stale, unresolved page - see the module
+        docstring and ``_resolve_destination``.
+        """
+        if timeout is None:
+            timeout = self._t.dest_id_resolve
         try:
             await page.wait_for_url(lambda url: "dest_id=" in url, timeout=timeout)
             return True

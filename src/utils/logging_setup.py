@@ -69,7 +69,26 @@ def setup_logging(
 
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        try:
+            file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        except PermissionError as exc:
+            # The classic first-run Docker issue: log_file.parent.mkdir()
+            # above succeeds even when the directory ISN'T writable (it's
+            # a no-op via exist_ok=True once the directory already exists,
+            # which needs no write permission), so this is the first place
+            # that actually tries to write into it and fails. Almost always
+            # a bind-mounted ./output owned by a UID that doesn't match the
+            # container user - see the Makefile's _ensure_output target,
+            # which chmods the mount specifically to prevent this. Fail
+            # with a message that says what to do, not a bare traceback.
+            raise PermissionError(
+                f"Cannot write to {log_file} ({exc}). This almost always "
+                f"means the mounted output directory's permissions don't "
+                f"match the container's user. Fix: on the host, run "
+                f"`mkdir -p output && chmod -R 777 output` (or just "
+                f"`make doctor`/any `make run-*` target, which now does "
+                f"this automatically), then retry."
+            ) from exc
         file_handler.setFormatter(formatter)
         handlers.append(file_handler)
 

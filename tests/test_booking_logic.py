@@ -32,7 +32,11 @@ import pytest
 
 from src.config import Settings
 from src.models import BookingResult, MatchStatus, SearchWindow
-from src.scrapers.booking import BookingBlockedError, BookingScraper
+from src.scrapers.booking import (
+    BookingBlockedError,
+    BookingScraper,
+    _unavailable_card_outcome,
+)
 from src.utils.selectors import SelectorRegistry
 from src.utils.text import fuzzy_score
 
@@ -473,3 +477,47 @@ class TestCardIsUnavailable:
         scraper._no_avail_markers = []
         card = FakeLocator(text="anything at all")
         assert await scraper._card_is_unavailable(card) is False
+
+# ---------------------------------------------------------------------------
+# Deciding what an "unavailable" card means when destination resolution
+# itself was never confirmed
+# ---------------------------------------------------------------------------
+
+class TestUnavailableCardOutcomeTrustsOnlyResolvedPages:
+    """
+    A matched card reading "unavailable" is only real, terminal NO_RESULTS
+    evidence if we actually confirmed Booking resolved the destination
+    (dest_id present). Live-diagnosed 2026-07: a production run showed
+    ~60% of lookups coming back NO_RESULTS at a perfect fuzzy_score=100 -
+    including Marriott/Fairmont/Hilton/Barceló properties confirmed live to
+    be genuinely bookable. Root cause was _wait_for_dest_id's timeout
+    (6s, hardcoded) losing a race against real navigation latency under
+    BOOKING_CONCURRENCY > 1, silently falling back to the cold, unresolved,
+    always-"unavailable" placeholder page. This is the second layer of the
+    fix: even if that race is lost again, the reading is no longer trusted
+    as final.
+    """
+
+    def test_unresolved_destination_is_retried_not_trusted(self) -> None:
+        result = _unavailable_card_outcome(
+            resolved=False,
+            matched_name="Rabat Marriott Hotel",
+            score=100.0,
+            final_url="https://www.booking.com/searchresults.html?ss=Rabat+Marriott+Hotel",
+        )
+        assert result.status is MatchStatus.ERROR
+        assert result.matched_name == "Rabat Marriott Hotel"
+        assert result.fuzzy_score == 100.0
+        assert "never confirmed resolved" in (result.error or "")
+
+    def test_resolved_destination_unavailable_is_accepted_as_final(self) -> None:
+        result = _unavailable_card_outcome(
+            resolved=True,
+            matched_name="FIVE Zurich - Luxury City Resort",
+            score=100.0,
+            final_url="https://www.booking.com/searchresults.html?dest_id=123&dest_type=hotel",
+        )
+        assert result.status is MatchStatus.NO_RESULTS
+        assert result.url == "https://www.booking.com/searchresults.html?dest_id=123&dest_type=hotel"
+        assert "marked unavailable" in (result.error or "")
+

@@ -41,7 +41,12 @@ from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from src.config import Settings
-from src.models import CSV_COLUMNS, CSV_HEADER_ALIASES, PriceRecord
+from src.models import (
+    CSV_COLUMNS,
+    CSV_HEADER_ALIASES,
+    PriceRecord,
+    market_scope_for,
+)
 from src.utils.logging_setup import get_logger
 from src.utils.text import normalise_key
 
@@ -60,6 +65,7 @@ CREATE TABLE IF NOT EXISTS price_records (
     hotel_name            TEXT NOT NULL,
     hotel_name_normalised TEXT NOT NULL,
     city                  TEXT NOT NULL,
+    market_scope          TEXT DEFAULT '',
     checkin               TEXT NOT NULL,
     checkout              TEXT NOT NULL,
     nights                INTEGER DEFAULT 1,
@@ -105,7 +111,8 @@ CREATE INDEX IF NOT EXISTS idx_run         ON price_records (run_id);
 """
 
 _UPSERT_COLUMNS = [
-    "dedup_key", "hotel_name", "hotel_name_normalised", "city", "checkin",
+    "dedup_key", "hotel_name", "hotel_name_normalised", "city", "market_scope",
+    "checkin",
     "checkout", "nights", "horizon_label", "horizon_offset_days",
     "execution_date", "rooms", "adults_per_room", "nuitee_display_price",
     "nuitee_final_price", "nuitee_local_fees",
@@ -480,6 +487,7 @@ def _row_from_csv_dict(raw: dict[str, str]) -> Optional[tuple]:
         "hotel_name": hotel_name,
         "hotel_name_normalised": hotel_name_normalised,
         "city": city,
+        "market_scope": row.get("market_scope") or market_scope_for(city),
         "checkin": checkin,
         "checkout": checkout,
         "nights": _as_int(row.get("nights"), default=1),

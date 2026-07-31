@@ -278,6 +278,72 @@ class TestExport:
         assert row[local_fees_idx] == "145.25"
 
 
+class TestMarketScopeClassification:
+    """
+    ``market_scope`` distinguishes domestic Morocco cities ("National
+    (Morocco)") from everything else ("International"), computed from
+    ``city`` alone so callers never have to set it - added to support
+    splitting the input city list into input_morocco.json /
+    input_international.json and telling the two apart in the exported CSV.
+    """
+
+    async def test_morocco_city_is_national(self, store: PriceStore) -> None:
+        await store.add(make_record("Riad Fes", city="Fes"))
+        await store.flush()
+
+        path = await store.export_csv()
+        with path.open(newline="", encoding="utf-8-sig") as handle:
+            rows = list(csv.reader(handle))
+        header, body = rows[0], rows[1:]
+
+        assert "Market Scope" in header
+        idx = header.index("Market Scope")
+        row = next(r for r in body if "Riad Fes" in r)
+        assert row[idx] == "National (Morocco)"
+
+    async def test_non_morocco_city_is_international(
+        self, store: PriceStore
+    ) -> None:
+        await store.add(make_record("Hotel Paris", city="Paris"))
+        await store.flush()
+
+        path = await store.export_csv()
+        with path.open(newline="", encoding="utf-8-sig") as handle:
+            rows = list(csv.reader(handle))
+        header, body = rows[0], rows[1:]
+
+        idx = header.index("Market Scope")
+        row = next(r for r in body if "Hotel Paris" in r)
+        assert row[idx] == "International"
+
+    async def test_bootstraps_from_old_csv_missing_the_column(
+        self, settings: Settings, tmp_path
+    ) -> None:
+        """
+        A prices.csv written before this column existed has no "Market
+        Scope" header at all. Loading it back in (the resume/report/export
+        code path) must not crash, and should classify each row from its
+        City rather than leaving the column blank.
+        """
+        old_csv = settings.storage.csv_path
+        old_csv.parent.mkdir(parents=True, exist_ok=True)
+        old_csv.write_text(
+            "Hotel Name,City,Check-in,Check-out,Nights,Offset,"
+            "Adults per Room,Rooms,Match Status,Clean\n"
+            "Old Hotel,Marrakech,2026-07-30,2026-07-31,3,J+3,2,1,OK,1\n",
+            encoding="utf-8",
+        )
+        store2 = PriceStore(settings, run_id="test_run_2")
+        await store2.start_run({"test": True})
+        path = await store2.export_csv()
+        with path.open(newline="", encoding="utf-8-sig") as handle:
+            rows = list(csv.reader(handle))
+        header, body = rows[0], rows[1:]
+        idx = header.index("Market Scope")
+        row = next(r for r in body if "Old Hotel" in r)
+        assert row[idx] == "National (Morocco)"
+
+
 class TestReport:
     async def test_headline_metric_counts_distinct_hotels(
         self, store: PriceStore, settings: Settings

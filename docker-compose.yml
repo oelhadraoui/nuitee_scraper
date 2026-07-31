@@ -35,6 +35,19 @@ x-scraper-base: &scraper-base
   volumes:
     - ./output:/app/output
     - ./input.json:/app/input.json:ro
+    # National/international split (see README §3) - each needs its own bind
+    # mount by name, same as input.json above. Docker only mounts what's
+    # declared here; a bare `--input some_other_name.json` on the host is
+    # invisible to the container no matter what the file actually contains,
+    # which is exactly the "Input file not found" surprise this caused.
+    # `make` targets auto-generate these two (see _ensure_input in the
+    # Makefile) before they're ever needed, so the source path always
+    # exists by the time Compose starts - if you run `docker compose`
+    # directly instead of through `make`, generate them yourself first:
+    #   python scripts/generate_input.py --preset morocco --output input_morocco.json
+    #   python scripts/generate_input.py --preset europe --preset mena --preset world --output input_international.json
+    - ./input_morocco.json:/app/input_morocco.json:ro
+    - ./input_international.json:/app/input_international.json:ro
     - ./config:/app/config:ro
     - ./src:/app/src:ro
 
@@ -44,11 +57,11 @@ x-scraper-base: &scraper-base
   deploy:
     resources:
       limits:
-        cpus: "${CPU_LIMIT:-2.0}"
-        memory: ${MEM_LIMIT:-8G}
+        cpus: "${CPU_LIMIT:-3.0}"
+        memory: ${MEM_LIMIT:-6G}
       reservations:
-        cpus: "1.8"
-        memory: 8G
+        cpus: "3"
+        memory: 6G
 
   logging:
     driver: "json-file"
