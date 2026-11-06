@@ -11,6 +11,7 @@ dependency inside the Docker image; the subcommand structure is identical.
     python -m src.cli verify   --mode tunnel
     python -m src.cli report
     python -m src.cli export   --clean-only
+    python -m src.cli shortlist --min-pct 5
     python -m src.cli doctor
 """
 
@@ -28,6 +29,7 @@ from src.config import get_settings
 from src.pipeline.horizon_generator import plan_from_city_entries
 from src.pipeline.quality import QualityGate
 from src.pipeline.runner import PipelineRunner
+from src.pipeline.shortlist import build_shortlist, render_shortlist, write_shortlist
 from src.pipeline.storage import PriceStore
 from src.utils.logging_setup import get_logger, setup_logging
 from src.utils.selectors import REQUIRED_SELECTOR_PATHS, SelectorRegistry
@@ -169,6 +171,48 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use machine column names instead of friendly headers",
     )
 
+    # -- shortlist ------------------------------------------------------------
+    shortlist_cmd = sub.add_parser(
+        "shortlist",
+        help="Rank hotels where Nuitee is significantly cheaper than Booking",
+    )
+    shortlist_cmd.add_argument(
+        "--min-pct", type=float, default=5.0,
+        help="Minimum median gap, %% of the Nuitee price (default: 5)",
+    )
+    shortlist_cmd.add_argument(
+        "--min-mad-per-night", type=float, default=20.0,
+        help="Minimum median gap in MAD per night (default: 20)",
+    )
+    shortlist_cmd.add_argument(
+        "--min-windows", type=int, default=1,
+        help="Minimum clean windows (offset x duration) per hotel (default: 1)",
+    )
+    shortlist_cmd.add_argument(
+        "--sort", choices=["corridor", "gap"], default="corridor",
+        help="'corridor': client's country/city order, best gap first in each "
+             "city (default); 'gap': one ranking by gap, priority cities first",
+    )
+    shortlist_cmd.add_argument(
+        "--international-only", action="store_true",
+        help="Leave out Moroccan cities",
+    )
+    shortlist_cmd.add_argument(
+        "--output", "-o", type=Path, default=None,
+        help="CSV path (default: output/shortlist.csv, detail alongside)",
+    )
+
+    # -- merge ----------------------------------------------------------------
+    merge_cmd = sub.add_parser(
+        "merge",
+        help="Merge other stores' prices.csv (e.g. output/national, "
+             "output/international) into the main store",
+    )
+    merge_cmd.add_argument(
+        "sources", nargs="+", type=Path,
+        help="prices.csv files, or directories containing one",
+    )
+
     # -- doctor ---------------------------------------------------------------
     sub.add_parser("doctor", help="Validate configuration, selectors and storage")
 
@@ -210,14 +254,17 @@ def _load_cities(args: argparse.Namespace) -> list[dict]:
         data = json.load(handle)
 
     if isinstance(data, dict):
-        # New format: {"cities": [...], "rooms_config": [2]}
+        # New format: {"cities": [...], "rooms_config": [2], "priority_cities": [...]}
         entries = data.get("cities", [])
         rooms = data.get("rooms_config")
+        priority = {c.strip().lower() for c in data.get("priority_cities", [])}
         normalised = []
         for entry in entries:
             item = {"city": entry} if isinstance(entry, str) else dict(entry)
             if rooms and "rooms_config" not in item:
                 item["rooms_config"] = rooms
+            if str(item.get("city", "")).strip().lower() in priority:
+                item["priority"] = True
             normalised.append(item)
         return normalised
 
@@ -304,6 +351,9 @@ async def cmd_plan(args: argparse.Namespace) -> int:
         print(f"\n{plan.describe()}\n")
         print(f"  Cities    : {', '.join(plan.cities[:12])}"
               f"{' ...' if len(plan.cities) > 12 else ''}")
+        if plan.priority_count:
+            print(f"  Priority  : first {plan.priority_count} cities run "
+                  f"every window before the rest")
         print(f"  Offsets   : {', '.join(plan.offset_labels)}")
         print(f"  Durations : {', '.join(f'{n}n' for n in plan.durations_nights)}")
         print(f"  Reference : {plan.reference_date}"
@@ -390,6 +440,52 @@ async def cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+async def cmd_shortlist(args: argparse.Namespace) -> int:
+    settings = get_settings()
+    store = PriceStore(settings)
+    store.init_schema()
+
+    rows = await store.fetch("is_clean = 1", order_by="")
+    entries = build_shortlist(
+        rows,
+        min_gap_pct=args.min_pct,
+        min_gap_mad_per_night=args.min_mad_per_night,
+        min_windows=args.min_windows,
+        international_only=args.international_only,
+        sort=args.sort,
+    )
+
+    path = args.output or settings.storage.output_dir / "shortlist.csv"
+    detail = path.with_name(f"{path.stem}_detail{path.suffix}")
+    write_shortlist(entries, path, detail)
+
+    print(f"\n{render_shortlist(entries)}\n")
+    print(f"Shortlist  : {path}")
+    print(f"Detail     : {detail}\n")
+    return 0
+
+
+async def cmd_merge(args: argparse.Namespace) -> int:
+    settings = get_settings()
+    store = PriceStore(settings)
+    store.init_schema()
+
+    for source in args.sources:
+        path = source / settings.storage.csv_name if source.is_dir() else source
+        if not path.is_file():
+            print(f"  skip  {path} (not found)")
+            continue
+        if path.resolve() == store.csv_path.resolve():
+            continue
+        imported = await store.import_csv(path)
+        print(f"  merged {imported:>6,} rows from {path}")
+
+    total = await store.count()
+    clean = await store.clean_count()
+    print(f"\nMerged store : {store.csv_path} ({total:,} rows, {clean:,} clean)\n")
+    return 0
+
+
 async def cmd_doctor(_: argparse.Namespace) -> int:
     """Pre-flight check: config, selectors, storage, optional dependencies."""
     problems: list[str] = []
@@ -471,6 +567,8 @@ _COMMANDS = {
     "verify": cmd_verify,
     "report": cmd_report,
     "export": cmd_export,
+    "shortlist": cmd_shortlist,
+    "merge": cmd_merge,
     "doctor": cmd_doctor,
 }
 
@@ -481,7 +579,13 @@ async def _async_main(argv: Optional[Sequence[str]] = None) -> int:
     setup_logging(
         level=args.log_level or settings.log_level,
         json_output=settings.log_json,
-        log_file=settings.storage.output_dir / "scraper.log",
+        # `doctor` is the container healthcheck and runs every 60s; logging
+        # it to scraper.log buried the real run's lines under ~1,400 lines a
+        # day of "Storage ready", which is how a 5-day hang went unnoticed.
+        log_file=(
+            None if args.command == "doctor"
+            else settings.storage.output_dir / "scraper.log"
+        ),
     )
     handler = _COMMANDS[args.command]
     return await handler(args)

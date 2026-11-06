@@ -194,6 +194,25 @@ class TimeoutSettings(BaseSettings):
     # number, matching every other wait budget in this module.
     dest_id_resolve: int = 12_000
 
+    # --- hard deadlines (watchdogs) ----------------------------------------
+    # Every wait above bounds ONE Playwright call. Several Playwright calls
+    # take no timeout at all (page.evaluate, locator.count, context.close),
+    # and a wedged Chromium renderer never answers them. Live incident,
+    # 2026-10: one Booking tab froze during "Orlando 1W"; lookup_many()'s
+    # gather() waited on it forever and the run sat idle for 5 days, while
+    # the healthcheck kept reporting "healthy". These deadlines wrap whole
+    # units of work so a frozen tab can cost minutes, never the run.
+    #: One Booking search attempt (page load + resolve + match + price).
+    booking_lookup_hard: int = 240_000
+    #: One hotel's whole tunnel walk, retries included.
+    tunnel_hotel_hard: int = 900_000
+    #: One results-page harvest (search form + infinite scroll + detail URLs).
+    harvest_hard: int = 1_200_000
+    #: Closing one browser context. A renderer that ignores close is wedged.
+    context_close: int = 15_000
+    #: A whole search window (harvest + tunnel + Booking). Last resort only.
+    window_hard: int = 5_400_000
+
 
 # ---------------------------------------------------------------------------
 # Nuitee checkout tunnel
@@ -289,6 +308,20 @@ class BookingSettings(BaseSettings):
 
     concurrency: int = Field(default=4, ge=1, le=32)
     max_retries: int = Field(default=2, ge=0, le=5)
+
+    # --- identity matching (see models.HotelIdentity) -----------------------
+    #: Use the Nuitee hotel's Booking id and coordinates when known. Off =
+    #: the original name-only matching.
+    use_hotel_ids: bool = True
+    #: A card this close (metres) to the Nuitee hotel is the same property,
+    #: given a name score of at least ``geo_name_threshold``.
+    geo_match_m: float = Field(default=150.0, gt=0)
+    geo_name_threshold: float = Field(default=60.0, ge=0.0, le=100.0)
+    #: A card farther than this is never the same property, whatever its
+    #: name scores (same-name chain hotels across town).
+    geo_reject_m: float = Field(default=1_000.0, gt=0)
+    #: Sanity floor for an id match when no coordinates can confirm it.
+    id_name_floor: float = Field(default=50.0, ge=0.0, le=100.0)
 
 
 # ---------------------------------------------------------------------------
@@ -453,6 +486,8 @@ class StorageSettings(BaseSettings):
     csv_name: str = "prices.csv"
     clean_csv_name: str = "prices_clean.csv"
     report_name: str = "quality_report.json"
+    #: Learned Nuitee hotel id -> Booking hotel id pairs (see hotel_ids.py).
+    id_map_name: str = "hotel_id_map.json"
 
     #: Rows buffered before a batch commit - each commit also rewrites both
     #: CSV files, so this is the cadence at which progress becomes visible.
@@ -473,6 +508,10 @@ class StorageSettings(BaseSettings):
     @property
     def report_path(self) -> Path:
         return self.output_dir / self.report_name
+
+    @property
+    def id_map_path(self) -> Path:
+        return self.output_dir / self.id_map_name
 
 
 # ---------------------------------------------------------------------------

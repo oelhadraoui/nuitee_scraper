@@ -56,6 +56,14 @@ help:
 	@echo "    make run-smoke           2 cities x 4 windows (fast sanity check)"
 	@echo "    make plan                Print the analysis plan without scraping"
 	@echo ""
+	@echo "  BACKGROUND (national + international in parallel)"
+	@echo "    make run-both            Start both workers detached (recommended)"
+	@echo "    make run-national        Moroccan cities only   -> output/national/"
+	@echo "    make run-international   International only     -> output/international/"
+	@echo "    make status              Progress of both workers"
+	@echo "    make results             Merge both + report + shortlist (any time)"
+	@echo "    make stop-both           Stop both (finished windows are kept)"
+	@echo ""
 	@echo "  QUALITY"
 	@echo "    make verify              Repair failed tunnel + Booking rows"
 	@echo "    make verify-tunnel       Repair failed tunnel extractions only"
@@ -63,6 +71,7 @@ help:
 	@echo "    make export              Export CSV (all rows)"
 	@echo "    make export-clean        Export CSV (clean rows only)"
 	@echo "    make export-parquet      Export Parquet"
+	@echo "    make shortlist           Hotels where Nuitee beats Booking (MAD + %)"
 	@echo ""
 	@echo "  OPS"
 	@echo "    make logs                Tail container logs"
@@ -112,6 +121,7 @@ run-full-pipeline: _ensure_env _ensure_output _ensure_input
 	@echo "[pipeline] 3/3 exporting + reporting..."
 	$(COMPOSE) run --rm $(SERVICE) export --clean-only
 	$(COMPOSE) run --rm $(SERVICE) report
+	$(COMPOSE) run --rm $(SERVICE) shortlist
 	@echo "[pipeline] complete. Results in $(OUTPUT)/"
 
 .PHONY: run-offset-short
@@ -143,6 +153,67 @@ run-smoke: _ensure_env _ensure_output _ensure_input
 		--cities "Casablanca,Marrakech" --only-offset all \
 		--limit-windows 4 --hotels-per-city 5 \
 		--run-id smoke_$(shell date +%Y%m%d_%H%M%S)
+
+# ---------------------------------------------------------------------------
+# Background scope workers (national / international, in parallel)
+# ---------------------------------------------------------------------------
+# Detached containers, each with its own store under output/<scope>/.
+# They keep running after you log out; `make status` shows progress.
+# Nothing is lost on stop: every finished window is already on disk, and
+# re-running the same day resumes (clean rows are skipped).
+SCOPES       := national international
+WORKERS       = $(COMPOSE) --profile scopes
+
+.PHONY: run-national run-international run-both
+run-national: _ensure_env _ensure_output _ensure_input
+	OFFSET=$(OFFSET) $(WORKERS) up -d --force-recreate national
+	@echo "[bg] national started -> output/national/   (make status | make logs-national)"
+
+run-international: _ensure_env _ensure_output _ensure_input
+	OFFSET=$(OFFSET) $(WORKERS) up -d --force-recreate international
+	@echo "[bg] international started -> output/international/   (make status | make logs-international)"
+
+run-both: _ensure_env _ensure_output _ensure_input
+	OFFSET=$(OFFSET) $(WORKERS) up -d --force-recreate $(SCOPES)
+	@echo "[bg] national + international started in the background."
+	@echo "     make status       progress of both"
+	@echo "     make results      merge + report + shortlist from what's done so far"
+	@echo "     make stop-both    stop them (finished windows are kept)"
+
+.PHONY: status
+status:
+	@$(WORKERS) ps -a --format 'table {{.Name}}\t{{.Status}}' $(SCOPES) 2>/dev/null || true
+	@for s in $(SCOPES); do \
+		log=$(OUTPUT)/$$s/scraper.log; \
+		echo ""; echo "== $$s"; \
+		[ -f $$log ] || { echo "   (not started)"; continue; }; \
+		grep -E '\] \[[0-9]+/[0-9]+\]' $$log | tail -1 | sed 's/^/   last window : /'; \
+		grep -E 'finished in|Target reached' $$log | tail -1 | sed 's/^/   /'; \
+		echo "   log updated : $$(date -r $$log '+%F %T')"; \
+		[ -f $(OUTPUT)/$$s/prices.csv ] && echo "   rows        : $$(($$(wc -l < $(OUTPUT)/$$s/prices.csv) - 1)) ($$(($$(wc -l < $(OUTPUT)/$$s/prices_clean.csv) - 1)) clean)"; \
+		n=$$(grep -cE 'exceeded|hung for' $$log); [ $$n -gt 0 ] && echo "   watchdog    : $$n stuck step(s) abandoned and skipped"; \
+	done; echo ""
+
+.PHONY: logs-national logs-international
+logs-national:
+	tail -f $(OUTPUT)/national/scraper.log
+logs-international:
+	tail -f $(OUTPUT)/international/scraper.log
+
+.PHONY: stop-both
+stop-both:
+	-$(WORKERS) stop -t 60 $(SCOPES)
+
+# Fold both scope stores into output/prices.csv (older rows already there are
+# kept), then report + shortlist. Safe to run while the workers are running.
+.PHONY: merge results
+merge: _ensure_output _ensure_input
+	$(COMPOSE) run --rm $(SERVICE) merge $(addprefix output/,$(SCOPES))
+
+results: merge
+	$(COMPOSE) run --rm $(SERVICE) report
+	$(COMPOSE) run --rm $(SERVICE) shortlist $(if $(MIN_PCT),--min-pct $(MIN_PCT),)
+	@echo "[results] output/prices_clean.csv  output/shortlist.csv  output/quality_report.json"
 
 .PHONY: start
 start: _ensure_env _ensure_output _ensure_input
@@ -183,6 +254,10 @@ export: _ensure_output _ensure_input
 .PHONY: export-clean
 export-clean: _ensure_output _ensure_input
 	$(COMPOSE) run --rm $(SERVICE) export --clean-only
+
+.PHONY: shortlist
+shortlist: _ensure_output _ensure_input
+	$(COMPOSE) run --rm $(SERVICE) shortlist $(if $(MIN_PCT),--min-pct $(MIN_PCT),)
 
 .PHONY: export-parquet
 export-parquet: _ensure_output _ensure_input
@@ -278,5 +353,5 @@ _ensure_input:
 	@test -f input_morocco.json || \
 		$(PYTHON) scripts/generate_input.py --preset morocco --output input_morocco.json >/dev/null
 	@test -f input_international.json || \
-		$(PYTHON) scripts/generate_input.py --preset europe --preset mena --preset world \
+		$(PYTHON) scripts/generate_input.py --preset priority --preset europe --preset mena --preset world \
 			--output input_international.json >/dev/null

@@ -37,6 +37,7 @@ from typing import Optional
 from src.config import Settings
 from src.models import (
     BookingResult,
+    HotelIdentity,
     MatchStatus,
     NuiteeHotel,
     PriceRecord,
@@ -51,6 +52,7 @@ from src.pipeline.storage import PriceStore
 from src.scrapers.booking import BookingScraper
 from src.scrapers.nuitee import NuiteeScraper
 from src.utils.browser import BrowserManager
+from src.utils.hotel_ids import identity_for
 from src.utils.logging_setup import get_logger
 from src.utils.selectors import (
     REQUIRED_SELECTOR_PATHS,
@@ -166,6 +168,7 @@ class PipelineRunner:
                         rooms_config=(
                             plan.windows[0].rooms_config if plan.windows else (2,)
                         ),
+                        priority_count=plan.priority_count,
                     )
                     log.warning(
                         "Long offset %r under-delivered (%d clean over %d "
@@ -253,10 +256,20 @@ class PipelineRunner:
                 window.checkin_str, window.checkout_str, clean_so_far, target,
             )
 
+            window_budget = self.settings.timeouts.window_hard / 1000
             try:
-                await self._execute_window(window, nuitee, booking)
+                await asyncio.wait_for(
+                    self._execute_window(window, nuitee, booking),
+                    timeout=window_budget,
+                )
             except asyncio.CancelledError:
                 raise
+            except asyncio.TimeoutError:
+                log.error(
+                    "[%s %s %s] window exceeded %.0f min - abandoned, moving on",
+                    window.city, window.horizon_label, window.checkin_str,
+                    window_budget / 60,
+                )
             except Exception as exc:
                 log.error(
                     "[%s %s %s] window failed: %s",
@@ -333,8 +346,19 @@ class PipelineRunner:
             window.city, len(priceable), len(hotels),
         )
 
+        identities = {}
+        for h in priceable:
+            key = normalise_key(h.name)
+            identity = identity_for(
+                tunnel_results[key].identity, tunnel_results[key].detail_url, h.detail_url
+            )
+            if identity is not None:
+                identities[key] = identity
+
         booking_results = (
-            await booking.lookup_many(window, [h.name for h in priceable])
+            await booking.lookup_many(
+                window, [h.name for h in priceable], identities=identities
+            )
             if priceable
             else {}
         )
@@ -404,6 +428,10 @@ class PipelineRunner:
             tunnel_deepest_panel=tunnel.deepest_panel,
             tunnel_panels_visited=">".join(tunnel.panels_visited),
             nuitee_url=tunnel.detail_url or hotel.detail_url,
+            nuitee_hotel_id=(
+                identity_for(tunnel.identity, tunnel.detail_url, hotel.detail_url)
+                or HotelIdentity()
+            ).nuitee_hotel_id,
 
             booking_price=booking.price,
             booking_matched_name=booking.matched_name,
@@ -412,6 +440,9 @@ class PipelineRunner:
             if isinstance(booking.status, MatchStatus)
             else str(booking.status),
             booking_url=booking.url,
+            booking_hotel_id=booking.booking_hotel_id,
+            match_method=booking.match_method,
+            match_distance_m=booking.distance_m,
 
             currency=self.settings.booking.currency,
         )

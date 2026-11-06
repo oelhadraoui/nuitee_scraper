@@ -45,7 +45,7 @@ x-scraper-base: &scraper-base
     # exists by the time Compose starts - if you run `docker compose`
     # directly instead of through `make`, generate them yourself first:
     #   python scripts/generate_input.py --preset morocco --output input_morocco.json
-    #   python scripts/generate_input.py --preset europe --preset mena --preset world --output input_international.json
+    #   python scripts/generate_input.py --preset priority --preset europe --preset mena --preset world --output input_international.json
     - ./input_morocco.json:/app/input_morocco.json:ro
     - ./input_international.json:/app/input_international.json:ro
     - ./config:/app/config:ro
@@ -57,7 +57,7 @@ x-scraper-base: &scraper-base
   deploy:
     resources:
       limits:
-        cpus: "${CPU_LIMIT:-3.0}"
+        cpus: "${CPU_LIMIT:-2.0}"
         memory: ${MEM_LIMIT:-6G}
       reservations:
         cpus: "3"
@@ -69,7 +69,63 @@ x-scraper-base: &scraper-base
       max-size: "50m"
       max-file: "5"
 
+# -- background scope workers (national / international) ---------------------
+# Each worker writes to its OWN store under output/<scope>/ (prices.csv,
+# prices_clean.csv, scraper.log, quality_report.json). Two processes can
+# never share one prices.csv: each flush rewrites the whole file from that
+# process's memory, so a shared file would lose the other worker's rows.
+# `make merge` folds both stores into output/prices.csv afterwards (or at
+# any point mid-run, for partial results).
+#
+# Sized for running BOTH at once on a small host (2 vCPU / ~6 GB free):
+# lower per-worker concurrency and memory than the single-run default.
+# Override per run, e.g.  WORKER_BOOKING_CONCURRENCY=5 make run-both
+x-scope-worker: &scope-worker
+  <<: *scraper-base
+  profiles: ["scopes"]
+  deploy:
+    resources:
+      limits:
+        cpus: "${WORKER_CPU_LIMIT:-2.0}"
+        memory: ${WORKER_MEM_LIMIT:-4G}
+      reservations:
+        memory: 1G
+  # Unhealthy = the run's own log hasn't moved in 30 min, i.e. it is stuck.
+  # (The old `doctor` healthcheck stayed "healthy" through a 5-day hang.)
+  healthcheck:
+    test: ["CMD-SHELL", "find \"$$STORAGE_OUTPUT_DIR/scraper.log\" -mmin -30 | grep -q ."]
+    interval: 120s
+    timeout: 10s
+    start_period: 10m
+    retries: 2
+
 services:
+  # -- national: Moroccan cities -> output/national/ -------------------------
+  national:
+    <<: *scope-worker
+    container_name: nuitee_national
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TZ=${TZ:-Africa/Casablanca}
+      - STORAGE_OUTPUT_DIR=/app/output/national
+      - BOOKING_CONCURRENCY=${WORKER_BOOKING_CONCURRENCY:-4}
+      - NUITEE_TUNNEL_CONCURRENCY=${WORKER_TUNNEL_CONCURRENCY:-3}
+    command: ["run", "--input", "input_morocco.json", "--only-offset", "${OFFSET:-all}",
+              "--run-id", "national"]
+
+  # -- international: priority corridors first, then the rest -> output/international/
+  international:
+    <<: *scope-worker
+    container_name: nuitee_international
+    environment:
+      - PYTHONUNBUFFERED=1
+      - TZ=${TZ:-Africa/Casablanca}
+      - STORAGE_OUTPUT_DIR=/app/output/international
+      - BOOKING_CONCURRENCY=${WORKER_BOOKING_CONCURRENCY:-4}
+      - NUITEE_TUNNEL_CONCURRENCY=${WORKER_TUNNEL_CONCURRENCY:-3}
+    command: ["run", "--input", "input_international.json", "--only-offset", "${OFFSET:-all}",
+              "--run-id", "international"]
+
   # -- default: both offsets (short + long), both stay durations ----------
   scraper:
     <<: *scraper-base

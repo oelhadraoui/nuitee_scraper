@@ -44,12 +44,15 @@ from typing import Any, Optional
 from src.config import Settings, get_settings
 from src.models import (
     BookingResult,
+    HotelIdentity,
+    MatchMethod,
     MatchStatus,
     NuiteeHotel,
     PriceRecord,
     SearchWindow,
     TunnelResult,
     TunnelStatus,
+    compute_hidden_fees,
     format_rooms_config,
     parse_rooms_config,
 )
@@ -58,6 +61,7 @@ from src.pipeline.storage import PriceStore
 from src.scrapers.booking import BookingScraper
 from src.scrapers.nuitee import NuiteeScraper
 from src.utils.browser import BrowserManager
+from src.utils.hotel_ids import identity_for, nuitee_id_from_url
 from src.utils.logging_setup import get_logger, setup_logging
 from src.utils.selectors import SelectorRegistry
 from src.utils.text import normalise_key
@@ -234,7 +238,9 @@ class Verifier:
         # cannot become clean regardless of the Booking outcome.
         if needs_booking_retry(row) and tunnel.final_price is not None:
             self.stats["booking_retried"] += 1
-            new_booking = await booking.lookup(window, hotel_name)
+            new_booking = await booking.lookup(
+                window, hotel_name, self._identity_from_row(row, tunnel)
+            )
             if new_booking.status is MatchStatus.OK and new_booking.price:
                 booking_result = new_booking
                 self.stats["booking_fixed"] += 1
@@ -346,7 +352,30 @@ class Verifier:
             matched_name=row.get("booking_matched_name"),
             fuzzy_score=float(row.get("fuzzy_score") or 0.0),
             url=row.get("booking_url"),
+            match_method=row.get("match_method") or None,
+            booking_hotel_id=row.get("booking_hotel_id") or None,
+            distance_m=_as_float(row.get("match_distance_m")),
         )
+
+    @staticmethod
+    def _identity_from_row(
+        row: dict[str, Any], tunnel: TunnelResult
+    ) -> Optional[HotelIdentity]:
+        """
+        The hotel's identity for a Booking re-lookup: whatever a re-run
+        tunnel captured, plus the row's own ids. The row's Booking id is
+        only trusted when it was id- or location-confirmed.
+        """
+        identity = identity_for(
+            tunnel.identity, row.get("nuitee_url"), tunnel.detail_url
+        ) or HotelIdentity()
+        if row.get("nuitee_hotel_id") and not identity.nuitee_hotel_id:
+            identity.nuitee_hotel_id = row["nuitee_hotel_id"]
+        if not identity.booking_hotel_id and row.get("match_method") in (
+            MatchMethod.BOOKING_ID.value, MatchMethod.GEO.value,
+        ):
+            identity.booking_hotel_id = row.get("booking_hotel_id") or None
+        return identity if identity.nuitee_hotel_id or identity.booking_hotel_id else None
 
     def _rebuild_record(
         self,
@@ -371,20 +400,31 @@ class Verifier:
 
             nuitee_display_price=tunnel.display_price,
             nuitee_final_price=tunnel.final_price,
-            # Scraped only - None when the site's "Local fees" line
-            # couldn't be found for this hotel, never an estimate.
+            nuitee_hidden_fees=tunnel.local_fees
+            if tunnel.local_fees is not None
+            else compute_hidden_fees(
+                tunnel.final_price, tunnel.display_price, window.nights
+            ),
             nuitee_local_fees=tunnel.local_fees,
             nuitee_room_label=tunnel.room_label,
             tunnel_status=tunnel.status.value,
             tunnel_deepest_panel=tunnel.deepest_panel,
             tunnel_panels_visited=">".join(tunnel.panels_visited),
             nuitee_url=tunnel.detail_url or row.get("nuitee_url"),
+            nuitee_hotel_id=(
+                (tunnel.identity.nuitee_hotel_id if tunnel.identity else None)
+                or row.get("nuitee_hotel_id")
+                or nuitee_id_from_url(tunnel.detail_url or row.get("nuitee_url"))
+            ),
 
             booking_price=booking.price,
             booking_matched_name=booking.matched_name,
             fuzzy_score=booking.fuzzy_score,
             match_status=booking.status.value,
             booking_url=booking.url or row.get("booking_url"),
+            booking_hotel_id=booking.booking_hotel_id,
+            match_method=booking.match_method,
+            match_distance_m=booking.distance_m,
 
             currency=self.settings.booking.currency,
             run_id=row.get("run_id") or self.store.run_id,

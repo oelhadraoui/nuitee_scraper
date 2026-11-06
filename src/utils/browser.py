@@ -83,10 +83,13 @@ class Fingerprint:
             "Accept-Encoding": "gzip, deflate, br",
             "Referer": referer,
             "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "cross-site",
-            "Sec-Fetch-User": "?1",
+            # No Sec-Fetch-* here, ever. Chromium sets them per request
+            # (script/style/fetch each get their own). Context-wide extra
+            # headers apply to EVERY request, so forcing "Dest: document /
+            # Mode: navigate" onto the app's JS and CSS made Chromium fail
+            # them with net::ERR_INVALID_ARGUMENT - live 2026-11-04 the
+            # Nuitee SPA then rendered a blank page ("destination input not
+            # found"). Each of the four alone was enough.
             "sec-ch-ua": self.sec_ch_ua,
             "sec-ch-ua-mobile": "?0",
             "sec-ch-ua-platform": self.sec_ch_ua_platform,
@@ -328,6 +331,11 @@ class BrowserManager:
         self._contexts_created = 0
         self._relaunch_count = 0
         self._relaunch_lock = asyncio.Lock()
+        #: Pages currently checked out of :meth:`page`.
+        self._active = 0
+        #: Set when a context refused to close: its renderer is wedged and
+        #: still holding memory, so Chromium gets recycled once idle.
+        self._recycle_requested = False
 
     async def __aenter__(self) -> "BrowserManager":
         self._playwright = await async_playwright().start()
@@ -368,32 +376,43 @@ class BrowserManager:
         all race to relaunch at once) means a crash costs one relaunch, not
         the rest of the run.
         """
-        if self._browser is not None and self._browser.is_connected():
+        if self._healthy():
             return
         async with self._relaunch_lock:
-            if self._browser is not None and self._browser.is_connected():
+            if self._healthy():
                 return
-            if self._browser is not None:
-                try:
-                    await self._browser.close()
-                except Exception:
-                    pass
-            self._relaunch_count += 1
-            log.warning(
-                "Chromium was disconnected - relaunching (relaunch #%d)",
-                self._relaunch_count,
+            reason = (
+                "recycling after a wedged context"
+                if self._browser is not None and self._browser.is_connected()
+                else "Chromium was disconnected"
             )
+            await self._close_browser()
+            self._recycle_requested = False
+            self._relaunch_count += 1
+            log.warning("%s - relaunching (relaunch #%d)", reason, self._relaunch_count)
             self._browser = await self._launch_browser()
 
+    def _healthy(self) -> bool:
+        if self._browser is None or not self._browser.is_connected():
+            return False
+        # Only recycle while no other page is in flight - relaunching under
+        # a live page would kill work that is going fine.
+        return not (self._recycle_requested and self._active == 0)
+
+    async def _close_browser(self) -> None:
+        if self._browser is None:
+            return
+        try:
+            await asyncio.wait_for(self._browser.close(), timeout=30)
+        except Exception:
+            log.debug("browser.close() failed or hung", exc_info=True)
+        self._browser = None
+
     async def __aexit__(self, *exc_info) -> None:
-        if self._browser is not None:
-            try:
-                await self._browser.close()
-            except Exception:
-                log.debug("browser.close() failed", exc_info=True)
+        await self._close_browser()
         if self._playwright is not None:
             try:
-                await self._playwright.stop()
+                await asyncio.wait_for(self._playwright.stop(), timeout=30)
             except Exception:
                 log.debug("playwright.stop() failed", exc_info=True)
         log.info("Chromium closed (%d contexts created)", self._contexts_created)
@@ -421,13 +440,33 @@ class BrowserManager:
                 block_resources=block_resources,
             )
             self._contexts_created += 1
+            self._active += 1
             try:
                 yield context, page_obj
             finally:
-                try:
-                    await context.close()
-                except Exception:
-                    log.debug("context.close() failed", exc_info=True)
+                self._active -= 1
+                await self._close_context(context)
+
+    async def _close_context(self, context: BrowserContext) -> None:
+        """
+        Close ``context`` within ``timeouts.context_close``.
+
+        ``context.close()`` has no timeout of its own and never returns for
+        a wedged renderer - and it runs in the ``finally`` of every page, so
+        an unbounded close would also defeat every watchdog that cancels
+        the page's work.
+        """
+        budget = self.settings.timeouts.context_close / 1000
+        try:
+            await asyncio.wait_for(context.close(), timeout=budget)
+        except asyncio.TimeoutError:
+            log.warning(
+                "context.close() hung for %.0fs - abandoning it; Chromium "
+                "will be recycled once idle", budget,
+            )
+            self._recycle_requested = True
+        except Exception:
+            log.debug("context.close() failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------

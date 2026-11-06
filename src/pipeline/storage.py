@@ -83,12 +83,16 @@ CREATE TABLE IF NOT EXISTS price_records (
     tunnel_deepest_panel  TEXT,
     tunnel_panels_visited TEXT,
     nuitee_url            TEXT,
+    nuitee_hotel_id       TEXT,
 
     booking_price         REAL,
     booking_matched_name  TEXT,
     fuzzy_score           REAL DEFAULT 0,
     match_status          TEXT,
     booking_url           TEXT,
+    booking_hotel_id      TEXT,
+    match_method          TEXT,
+    match_distance_m      REAL,
 
     price_difference      REAL,
     price_difference_pct  REAL,
@@ -118,8 +122,9 @@ _UPSERT_COLUMNS = [
     "nuitee_final_price", "nuitee_local_fees",
     "nuitee_room_label",
     "tunnel_status", "tunnel_deepest_panel", "tunnel_panels_visited",
-    "nuitee_url", "booking_price", "booking_matched_name", "fuzzy_score",
-    "match_status", "booking_url", "price_difference", "price_difference_pct",
+    "nuitee_url", "nuitee_hotel_id", "booking_price", "booking_matched_name",
+    "fuzzy_score", "match_status", "booking_url", "booking_hotel_id",
+    "match_method", "match_distance_m", "price_difference", "price_difference_pct",
     "cheaper_platform", "currency", "is_clean", "quality_flags", "verified",
     "scraped_at", "run_id",
 ]
@@ -198,14 +203,8 @@ class PriceStore:
         assert self._conn is not None
         if not self.csv_path.is_file():
             return 0
-
-        rows: list[tuple] = []
         try:
-            with self.csv_path.open(encoding="utf-8-sig", newline="") as handle:
-                for raw in csv.DictReader(handle):
-                    row = _row_from_csv_dict(raw)
-                    if row is not None:
-                        rows.append(row)
+            rows = _read_csv_rows(self.csv_path)
         except (OSError, csv.Error) as exc:
             log.warning("Could not read existing %s (%s) - starting fresh", self.csv_path, exc)
             return 0
@@ -213,6 +212,28 @@ class PriceStore:
         if rows:
             self._conn.executemany(_UPSERT_SQL, rows)
             self._conn.commit()
+        return len(rows)
+
+    async def import_csv(self, path: Path) -> int:
+        """
+        Upsert every row of another store's ``prices.csv`` into this one and
+        rewrite this store's CSV files. Same rules as a scrape: a row only
+        replaces an existing one when it is at least as clean. Used to merge
+        the per-scope stores (national / international) that parallel runs
+        write to, since two processes can't share one CSV.
+        """
+        rows = await asyncio.to_thread(_read_csv_rows, path)
+
+        def _apply() -> None:
+            assert self._conn is not None
+            if rows:
+                self._conn.executemany(_UPSERT_SQL, rows)
+                self._conn.commit()
+            self._write_csv(self.csv_path, clean_only=False)
+            self._write_csv(self.clean_csv_path, clean_only=True)
+
+        async with self._lock:
+            await asyncio.to_thread(_apply)
         return len(rows)
 
     async def start_run(self, plan_summary: dict[str, Any]) -> None:
@@ -454,6 +475,17 @@ def _csv_value(value: Any) -> Any:
     return value
 
 
+def _read_csv_rows(path: Path) -> list[tuple]:
+    """Every parseable row of a store CSV (friendly or raw headers)."""
+    rows: list[tuple] = []
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        for raw in csv.DictReader(handle):
+            row = _row_from_csv_dict(raw)
+            if row is not None:
+                rows.append(row)
+    return rows
+
+
 def _row_from_csv_dict(raw: dict[str, str]) -> Optional[tuple]:
     """
     Convert one ``csv.DictReader`` row (friendly headers) back into a tuple
@@ -504,11 +536,15 @@ def _row_from_csv_dict(raw: dict[str, str]) -> Optional[tuple]:
         "tunnel_deepest_panel": "unknown",
         "tunnel_panels_visited": "",
         "nuitee_url": row.get("nuitee_url") or None,
+        "nuitee_hotel_id": row.get("nuitee_hotel_id") or None,
         "booking_price": _as_float(row.get("booking_price")),
         "booking_matched_name": row.get("booking_matched_name") or None,
         "fuzzy_score": _as_float(row.get("fuzzy_score")) or 0.0,
         "match_status": row.get("match_status") or None,
         "booking_url": row.get("booking_url") or None,
+        "booking_hotel_id": row.get("booking_hotel_id") or None,
+        "match_method": row.get("match_method") or None,
+        "match_distance_m": _as_float(row.get("match_distance_m")),
         "price_difference": _as_float(row.get("price_difference")),
         "price_difference_pct": _as_float(row.get("price_difference_pct")),
         "cheaper_platform": row.get("cheaper_platform") or None,

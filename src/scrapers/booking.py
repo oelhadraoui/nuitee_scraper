@@ -88,18 +88,34 @@ trusted as a terminal result - it comes back ``ERROR`` (retried) rather than
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import urllib.parse
+from dataclasses import dataclass
 from typing import Optional
 
 from playwright.async_api import Page
 
 from src.config import Settings
-from src.models import BookingResult, MatchStatus, SearchWindow
+from src.models import (
+    BookingResult,
+    HotelIdentity,
+    MatchMethod,
+    MatchStatus,
+    SearchWindow,
+)
 from src.utils.browser import (
     BrowserManager,
     dismiss_overlays,
     install_overlay_autodismiss,
     safe_text,
+)
+from src.utils.hotel_ids import (
+    PROPERTY_INDEX_JS,
+    BookingProperty,
+    HotelIdMap,
+    booking_slug_from_url,
+    haversine_m,
+    parse_property_index,
 )
 from src.utils.logging_setup import get_logger
 from src.utils.pricing import parse_price
@@ -156,6 +172,33 @@ def _unavailable_card_outcome(
     )
 
 
+@dataclass(slots=True)
+class _Candidate:
+    """One scored result card."""
+
+    index: int
+    name: str
+    score: float
+    method: MatchMethod = MatchMethod.NAME
+    booking_id: Optional[str] = None
+    distance_m: Optional[float] = None
+
+    @property
+    def confirmed(self) -> bool:
+        """Matched by id or location, not just by name."""
+        return self.method in (MatchMethod.BOOKING_ID, MatchMethod.GEO)
+
+    def accepted(self, name_threshold: float) -> bool:
+        return self.confirmed or self.score >= name_threshold
+
+    def info(self) -> dict:
+        return {
+            "match_method": self.method.value,
+            "booking_hotel_id": self.booking_id,
+            "distance_m": round(self.distance_m, 1) if self.distance_m is not None else None,
+        }
+
+
 class BookingScraper:
     """Looks up one hotel at a time on Booking.com and extracts its price."""
 
@@ -173,37 +216,58 @@ class BookingScraper:
         self._overlays = registry.get_optional("booking.overlays").candidates
         self._captcha_markers = registry.strings("booking.captcha_markers")
         self._no_avail_markers = registry.strings("booking.no_availability_markers")
+        self._ids = HotelIdMap(
+            settings.storage.id_map_path if self._cfg.use_hotel_ids else None
+        )
 
     # ======================================================================
     # Public API
     # ======================================================================
 
     async def lookup_many(
-        self, window: SearchWindow, hotel_names: list[str]
+        self,
+        window: SearchWindow,
+        hotel_names: list[str],
+        identities: Optional[dict[str, HotelIdentity]] = None,
     ) -> dict[str, BookingResult]:
         """
         Look up every hotel with bounded concurrency.
 
+        ``identities`` maps normalised name -> HotelIdentity (from the
+        tunnel) so lookups can use Booking ids and coordinates.
         Returns ``{normalised_name: BookingResult}``. Never raises.
         """
         semaphore = asyncio.Semaphore(self._cfg.concurrency)
         results: dict[str, BookingResult] = {}
+        identities = identities or {}
 
         async def _one(name: str) -> None:
+            key = normalise_key(name)
             async with semaphore:
-                results[normalise_key(name)] = await self.lookup(window, name)
+                results[key] = await self.lookup(window, name, identities.get(key))
                 await polite_delay(0.3, 1.1)
 
         await asyncio.gather(*(_one(n) for n in hotel_names), return_exceptions=True)
 
-        matched = sum(1 for r in results.values() if r.status is MatchStatus.OK)
+        ok = [r for r in results.values() if r.status is MatchStatus.OK]
+        methods = {m.value: 0 for m in MatchMethod}
+        for r in ok:
+            if r.match_method in methods:
+                methods[r.match_method] += 1
         log.info(
-            "[%s %s] booking: %d/%d matched",
-            window.city, window.horizon_label, matched, len(hotel_names),
+            "[%s %s] booking: %d/%d matched (by id %d, by location %d, by name %d)",
+            window.city, window.horizon_label, len(ok), len(hotel_names),
+            methods[MatchMethod.BOOKING_ID.value], methods[MatchMethod.GEO.value],
+            methods[MatchMethod.NAME.value],
         )
         return results
 
-    async def lookup(self, window: SearchWindow, hotel_name: str) -> BookingResult:
+    async def lookup(
+        self,
+        window: SearchWindow,
+        hotel_name: str,
+        identity: Optional[HotelIdentity] = None,
+    ) -> BookingResult:
         """
         Look up one hotel, with retries on TRANSIENT failures only.
 
@@ -226,8 +290,24 @@ class BookingScraper:
         for attempt in range(1, attempts + 1):
             result.attempts = attempt
             try:
-                result = await self._lookup_once(window, hotel_name)
+                # Hard deadline: a frozen renderer ignores per-call timeouts
+                # (page.evaluate / locator.count take none) and once froze
+                # a whole run for days - see TimeoutSettings.booking_lookup_hard.
+                result = await asyncio.wait_for(
+                    self._lookup_once(window, hotel_name, identity),
+                    timeout=self._t.booking_lookup_hard / 1000,
+                )
                 result.attempts = attempt
+            except asyncio.TimeoutError:
+                log.warning(
+                    "[%s] Booking lookup exceeded %.0fs - abandoning attempt %d",
+                    hotel_name[:40], self._t.booking_lookup_hard / 1000, attempt,
+                )
+                result = BookingResult(
+                    status=MatchStatus.ERROR,
+                    error="hard timeout: lookup never finished",
+                    attempts=attempt,
+                )
             except BookingBlockedError as exc:
                 log.warning("[%s] blocked: %s", hotel_name[:40], exc)
                 result = BookingResult(
@@ -254,10 +334,62 @@ class BookingScraper:
     # ======================================================================
 
     async def _lookup_once(
-        self, window: SearchWindow, hotel_name: str
+        self,
+        window: SearchWindow,
+        hotel_name: str,
+        identity: Optional[HotelIdentity] = None,
     ) -> BookingResult:
+        """
+        One lookup attempt: by Booking id first when the hotel's id is known
+        (from Nuitee's ``thirdPartyId`` or a previously confirmed match),
+        then the name search - which still uses the id and coordinates to
+        pick and verify the card.
+        """
+        identity = self._effective_identity(identity)
+        if identity is not None and identity.booking_hotel_id:
+            by_id = await self._search(window, hotel_name, identity, by_id=True)
+            if by_id is not None:
+                return by_id
+            log.debug(
+                "[%s] Booking id %s not among the results - falling back to "
+                "the name search", hotel_name[:40], identity.booking_hotel_id,
+            )
+        result = await self._search(window, hotel_name, identity, by_id=False)
+        assert result is not None
+        return result
+
+    def _effective_identity(
+        self, identity: Optional[HotelIdentity]
+    ) -> Optional[HotelIdentity]:
+        """``identity`` plus any learned Booking id; None when ids are off."""
+        if not self._cfg.use_hotel_ids or identity is None:
+            return None
+        if not identity.booking_hotel_id:
+            learned = self._ids.get(identity.nuitee_hotel_id)
+            if learned:
+                return dataclasses.replace(identity, booking_hotel_id=learned)
+        return identity
+
+    async def _search(
+        self,
+        window: SearchWindow,
+        hotel_name: str,
+        identity: Optional[HotelIdentity],
+        *,
+        by_id: bool,
+    ) -> Optional[BookingResult]:
+        """
+        Load one results page and match/price the hotel on it.
+
+        ``by_id`` searches ``dest_id={booking id}&dest_type=hotel`` and
+        returns None when that exact property isn't among the cards, so the
+        caller can fall back to the name search.
+        """
         expected = normalise_display(hotel_name)
-        search_url = self._build_search_url(window, expected)
+        search_url = self._build_search_url(
+            window, expected,
+            booking_hotel_id=identity.booking_hotel_id if by_id and identity else None,
+        )
 
         async with self.manager.page(referer="https://www.google.com/") as (_, page):
             if self._overlays:
@@ -278,8 +410,9 @@ class BookingScraper:
             # search is actually submitted; without this, a deep-linked URL
             # routinely renders a stale "unavailable" result even for
             # properties with real inventory (see the module docstring -
-            # live-verified against three unrelated hotels).
-            resolved = await self._resolve_destination(page, expected)
+            # live-verified against three unrelated hotels). A by-id URL
+            # already carries its dest_id, so there is nothing to resolve.
+            resolved = True if by_id else await self._resolve_destination(page, expected)
             if not resolved:
                 log.debug(
                     "[%s] destination never resolved to a dest_id - "
@@ -299,10 +432,23 @@ class BookingScraper:
 
             final_url = page.url
 
-            index, matched_name, score = await self._best_match(page, expected, window)
-            threshold = self._threshold_for(expected, window.city)
+            properties = await self._property_index(page) if identity else {}
+            candidate = await self._best_match(
+                page, expected, window,
+                identity=identity, properties=properties, scan_all=by_id,
+            )
+            if by_id and (
+                candidate is None or candidate.method is not MatchMethod.BOOKING_ID
+            ):
+                return None
 
-            if index is not None and score >= threshold:
+            index = candidate.index if candidate else None
+            matched_name = candidate.name if candidate else None
+            score = candidate.score if candidate else 0.0
+            threshold = self._threshold_for(expected, window.city)
+            match_info = candidate.info() if candidate else {}
+
+            if candidate is not None and candidate.accepted(threshold):
                 cards = page.locator(
                     self.registry.get("booking.property_card").combined
                 )
@@ -361,18 +507,22 @@ class BookingScraper:
                         ),
                     )
 
+                if candidate.confirmed and identity is not None:
+                    self._ids.learn(identity.nuitee_hotel_id, candidate.booking_id)
+
                 if await self._card_is_unavailable(cards.nth(index)):
                     log.debug(
                         "[%s] matched card %r reads unavailable "
                         "(destination resolved=%s)",
                         expected[:40], matched_name, resolved,
                     )
-                    return _unavailable_card_outcome(
+                    outcome = _unavailable_card_outcome(
                         resolved=resolved,
                         matched_name=matched_name,
                         score=score,
                         final_url=final_url,
                     )
+                    return dataclasses.replace(outcome, **match_info)
 
                 price = await self._extract_card_price(cards.nth(index))
 
@@ -388,6 +538,7 @@ class BookingScraper:
                         matched_name=matched_name,
                         fuzzy_score=score,
                         url=await self._card_url(cards.nth(index), final_url),
+                        **match_info,
                     )
 
                 return BookingResult(
@@ -396,6 +547,7 @@ class BookingScraper:
                     fuzzy_score=score,
                     url=final_url,
                     error="card matched but no price element resolved",
+                    **match_info,
                 )
 
             if await self._is_unavailable(page):
@@ -415,6 +567,10 @@ class BookingScraper:
                 error=(
                     f"best candidate {matched_name!r} scored {score:.0f} "
                     f"< threshold {threshold:.0f}"
+                    + (
+                        f", {candidate.distance_m:.0f} m away"
+                        if candidate and candidate.distance_m is not None else ""
+                    )
                 ),
             )
 
@@ -422,20 +578,31 @@ class BookingScraper:
     # URL construction
     # ======================================================================
 
-    def _build_search_url(self, window: SearchWindow, hotel_name: str) -> str:
+    def _build_search_url(
+        self,
+        window: SearchWindow,
+        hotel_name: str,
+        booking_hotel_id: Optional[str] = None,
+    ) -> str:
         """
         Deep link into Booking's results with the exact stay parameters.
 
         ``selected_currency=MAD`` is what keeps the whole dataset in one
         currency; without it Booking picks by IP geolocation and the output
-        silently mixes EUR and MAD rows.
+        silently mixes EUR and MAD rows. With ``booking_hotel_id`` the search
+        targets that exact property (``dest_type=hotel``), which Booking
+        lists first - live-verified 3/3.
         """
-        query = hotel_name
-        if not contains_city(hotel_name, window.city):
-            query = f"{hotel_name} {window.city}"
+        if booking_hotel_id:
+            target = {"dest_id": booking_hotel_id, "dest_type": "hotel"}
+        else:
+            query = hotel_name
+            if not contains_city(hotel_name, window.city):
+                query = f"{hotel_name} {window.city}"
+            target = {"ss": query}
 
         params = {
-            "ss": query,
+            **target,
             "checkin": window.checkin_str,
             "checkout": window.checkout_str,
             "group_adults": str(window.total_adults),
@@ -609,35 +776,127 @@ class BookingScraper:
         return self._cfg.fuzzy_threshold
 
     async def _best_match(
-        self, page: Page, expected: str, window: SearchWindow
-    ) -> tuple[Optional[int], Optional[str], float]:
-        """Score every visible card; return (index, name, score) of the best."""
+        self,
+        page: Page,
+        expected: str,
+        window: SearchWindow,
+        *,
+        identity: Optional[HotelIdentity] = None,
+        properties: Optional[dict[str, BookingProperty]] = None,
+        scan_all: bool = False,
+    ) -> Optional["_Candidate"]:
+        """
+        Score the visible cards and return the best candidate, or None.
+
+        Priority: the card whose Booking id equals the hotel's known id;
+        then a card within ``geo_match_m`` with a plausible name; then the
+        best fuzzy name. A card farther than ``geo_reject_m`` is never a
+        candidate, however well its name scores. Ids/coordinates come from
+        ``properties`` (the page's embedded data, keyed by card link slug);
+        without them this is the original name-only match. ``scan_all``
+        (the by-id search) looks at every card and only returns the id card.
+        """
         card_cascade = self.registry.get("booking.property_card")
         name_cascade = self.registry.get("booking.card_name")
+        link_cascade = self.registry.get_optional("booking.card_link")
 
         cards, count = await card_cascade.all_matching(page, timeout=self._t.first_card)
         if cards is None or count == 0:
-            return None, None, 0.0
+            return None
 
-        best_index: Optional[int] = None
-        best_name: Optional[str] = None
-        best_score = 0.0
+        use_props = bool(identity is not None and properties)
+        target_id = identity.booking_hotel_id if identity is not None else None
+        limit = count if scan_all else min(count, self._cfg.max_cards_to_scan)
+        best_geo: Optional[_Candidate] = None
+        best_name: Optional[_Candidate] = None
 
-        for index in range(min(count, self._cfg.max_cards_to_scan)):
-            raw = await name_cascade.text(cards.nth(index), timeout=700)
+        for index in range(limit):
+            card = cards.nth(index)
+            raw = await name_cascade.text(card, timeout=700)
             if not raw:
                 continue
             name = normalise_display(raw)
-            score = fuzzy_score(expected, name)
+            candidate = _Candidate(index, name, fuzzy_score(expected, name))
 
-            if score > best_score:
-                best_index, best_name, best_score = index, name, score
+            if use_props:
+                prop = await self._card_property(card, link_cascade, properties)
+                if prop is not None:
+                    candidate.booking_id = prop.booking_id
+                    if (
+                        identity.has_location
+                        and prop.latitude is not None
+                        and prop.longitude is not None
+                    ):
+                        candidate.distance_m = haversine_m(
+                            identity.latitude, identity.longitude,
+                            prop.latitude, prop.longitude,
+                        )
 
-            # An exact normalised hit cannot be beaten - stop scanning.
-            if score >= 99.5:
+            if target_id and candidate.booking_id == target_id:
+                if self._id_plausible(candidate):
+                    candidate.method = MatchMethod.BOOKING_ID
+                    return candidate
+                log.warning(
+                    "[%s] card %r has the expected Booking id %s but fails the "
+                    "sanity check (name %.0f, %s m) - not trusting the id",
+                    expected[:40], name, target_id, candidate.score,
+                    f"{candidate.distance_m:.0f}" if candidate.distance_m is not None else "?",
+                )
+            if scan_all:
+                continue
+
+            if candidate.distance_m is not None:
+                if candidate.distance_m > self._cfg.geo_reject_m:
+                    continue
+                if (
+                    candidate.distance_m <= self._cfg.geo_match_m
+                    and candidate.score >= self._cfg.geo_name_threshold
+                ):
+                    candidate.method = MatchMethod.GEO
+                    if best_geo is None or candidate.score > best_geo.score:
+                        best_geo = candidate
+
+            if best_name is None or candidate.score > best_name.score:
+                best_name = candidate
+
+            # An exact normalised hit cannot be beaten - stop scanning,
+            # unless an id card is being looked for, or coordinates put
+            # this card too far out to be location-confirmed.
+            if (
+                candidate.score >= 99.5
+                and not target_id
+                and (candidate.distance_m is None or candidate.method is MatchMethod.GEO)
+            ):
                 break
 
-        return best_index, best_name, best_score
+        return best_geo or best_name
+
+    def _id_plausible(self, candidate: "_Candidate") -> bool:
+        """An id match must not contradict location (or, failing that, name)."""
+        if candidate.distance_m is not None:
+            return candidate.distance_m <= self._cfg.geo_reject_m
+        return candidate.score >= self._cfg.id_name_floor
+
+    async def _card_property(
+        self, card, link_cascade, properties: dict[str, BookingProperty]
+    ) -> Optional[BookingProperty]:
+        """The embedded id/coordinates for ``card``, via its link's slug."""
+        try:
+            link = await link_cascade.first_attached(card, timeout=500)
+            href = await link.get_attribute("href") if link is not None else None
+        except Exception:
+            return None
+        slug = booking_slug_from_url(href)
+        return properties.get(slug) if slug else None
+
+    async def _property_index(self, page: Page) -> dict[str, BookingProperty]:
+        """Every listed property's id + coordinates, from the page's JSON."""
+        try:
+            raw = await asyncio.wait_for(page.evaluate(PROPERTY_INDEX_JS), timeout=5)
+        except Exception as exc:
+            log.debug("Booking property data unavailable: %s", exc)
+            return {}
+        return parse_property_index(raw)
 
     # ======================================================================
     # Extraction

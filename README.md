@@ -32,6 +32,7 @@ much data is usable and why the rest isn't.
 1. [Quick start](#1-quick-start)
 2. [Running a subset (single offset / single duration)](#2-running-a-subset-single-offset--single-duration)
 3. [Morocco vs. international input files](#3-morocco-vs-international-input-files)
+   (incl. [priority corridors](#priority-corridors) and [the shortlist](#the-shortlist-deliverable))
 4. [Booking horizons and stay durations](#4-booking-horizons-and-stay-durations)
 5. [Data quality gate](#5-data-quality-gate)
 6. [Architecture](#6-architecture)
@@ -128,7 +129,7 @@ domestic or international inventory without hand-editing a city list:
 
 ```bash
 python scripts/generate_input.py --preset morocco --output input_morocco.json
-python scripts/generate_input.py --preset europe --preset mena --preset world \
+python scripts/generate_input.py --preset priority --preset europe --preset mena --preset world \
     --output input_international.json
 ```
 
@@ -147,6 +148,90 @@ invisible if you're using `make`. Running `docker compose run` directly
 instead, generate them yourself first (the two commands above) or Docker
 fills the mount with an empty directory and the CLI reports "Input file not
 found" even though the file exists right next to it on the host.
+
+### Running national + international in the background (recommended)
+
+```bash
+make run-both          # two detached workers, in parallel
+make status            # progress of each: last window, rows, clean rows
+make results           # merge both + report + shortlist, from whatever is done so far
+make stop-both         # stop (every finished window is already saved)
+```
+
+Each worker has its own store: `output/national/` (from `input_morocco.json`)
+and `output/international/` (from `input_international.json`), each with its
+own `prices.csv`, `prices_clean.csv` and `scraper.log`. They must not share
+one: each flush rewrites the whole CSV from that process's memory.
+`make results` / `make merge` fold both into `output/prices.csv` (rows
+already there are kept) and can run while the workers are still going.
+
+`make run-full-pipeline` / `make run` use `input.json`, which puts the 59
+priority corridors first, so Moroccan cities only start after 236 windows,
+several days in. Use `run-both` when you need both scopes.
+
+**How long it takes.** A window (one city × offset × duration) takes about
+15–20 min for 25 hotels (harvest, tunnel, Booking). National = 20 cities × 4
+= 80 windows ≈ 1 day. International = 93 cities × 4 = 372 windows ≈ 4 days,
+with the 59 priority corridors done first (≈ 2.5 days). Ways to cut it:
+`OFFSET=short make run-both` (half the windows), fewer hotels per window
+(`NUITEE_HOTELS_PER_CITY=15` in `.env`), or one stay duration
+(`HORIZON_STAY_DURATIONS_NIGHTS=3`). Per-worker concurrency/memory:
+`WORKER_BOOKING_CONCURRENCY`, `WORKER_TUNNEL_CONCURRENCY`, `WORKER_MEM_LIMIT`.
+
+**Hang protection.** Each Booking attempt, tunnel walk, harvest, and window
+has a hard deadline (`TIMEOUT_BOOKING_LOOKUP_HARD`, `TIMEOUT_TUNNEL_HOTEL_HARD`,
+`TIMEOUT_HARVEST_HARD`, `TIMEOUT_WINDOW_HARD`, in ms). A frozen browser tab
+costs at most its deadline and is logged as `exceeded`, instead of stalling
+the run (one did, for 5 days). The workers' healthcheck turns `unhealthy`
+if their log hasn't moved in 30 minutes.
+
+### Priority corridors
+
+The client's corridors live in `config/corridors.json` (France, Spain,
+Portugal, Italy, Switzerland, Germany, Netherlands, Belgium, UK, Turkey, UAE,
+Saudi Arabia, Thailand, Vietnam, China, Malaysia, USA, Canada, Mexico, in the
+brief's order). Algarve and Cappadocia are regions, so their main hotel
+towns are searched instead (Albufeira/Faro, Goreme). Countries the brief named
+without cities use their main hubs. Edit the file to change any of this.
+
+The `priority` preset is first in every generated input file, and the file
+lists those cities under `priority_cities`. The plan then runs **every
+offset x duration for the priority cities before any other city starts**,
+so a run that stops early (target reached, or killed) has fully covered the
+corridors first. `plan --dry-run` shows the split.
+
+### The shortlist deliverable
+
+```bash
+python -m src.cli shortlist                 # or: make shortlist
+python -m src.cli shortlist --min-pct 10 --sort gap --international-only
+```
+
+This builds the ranked list of hotels where Nuitée's true payable price is
+significantly below Booking's for an equivalent stay. Only **clean** rows are
+used: same hotel (fuzzy-matched), same dates, same occupancy, and both
+whole-stay totals including taxes and fees, in MAD (DH). A hotel qualifies
+when the **median** over all its clean windows clears both thresholds, so one
+lucky window isn't enough:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--min-pct` | `5` | Median gap as % of the Nuitée price |
+| `--min-mad-per-night` | `20` | Median gap in MAD per night (keeps 3n and 10n comparable) |
+| `--min-windows` | `1` | Minimum clean windows per hotel (raise for more confidence) |
+| `--sort` | `corridor` | `corridor`: the brief's country/city order, best gap first within each city. `gap`: one ranking, priority cities first |
+| `--international-only` | off | Leave out Moroccan cities |
+
+Writes `output/shortlist.csv` (one row per hotel: overall and per-city rank,
+country, median gap in % and MAD/night, best window with both whole-stay
+prices and the gap in MAD and %, match score, links) and
+`output/shortlist_detail.csv` (every clean window behind each hotel).
+`make run-full-pipeline` produces it as its last step.
+
+**What "equivalent" doesn't cover yet:** the Booking side doesn't record room
+type, board or cancellation policy, so they aren't matched explicitly. The
+`Nuitee Room` column and the two URLs are there for spot-checks, which is
+worth doing on very large gaps before sending the list to anyone.
 
 Every output row is also tagged with a **`Market Scope`** column
 (`National (Morocco)` / `International`), computed automatically from the
@@ -233,8 +318,9 @@ failed re-scrape can never overwrite a previously clean row.
 ├── config/selectors.yaml        ← ALL DOM selectors, as ordered cascades
 ├── src/
 │   ├── config.py                ← Pydantic settings (validated at start-up)
+│   ├── corridors.py             ← priority-corridor lookup (country, order)
 │   ├── models.py                ← Typed domain models + CSV schema
-│   ├── cli.py                   ← argparse CLI (run/plan/verify/report/export/doctor)
+│   ├── cli.py                   ← argparse CLI (run/plan/verify/report/export/shortlist/doctor)
 │   ├── verify_and_correct.py    ← tunnel + Booking repair pass
 │   ├── scrapers/
 │   │   ├── nuitee.py            ← search → harvest → tunnel orchestration
@@ -244,10 +330,12 @@ failed re-scrape can never overwrite a previously clean row.
 │   │   ├── horizon_generator.py ← today + offsets x durations plans
 │   │   ├── runner.py            ← orchestrator (crossing-aware early exit)
 │   │   ├── storage.py           ← CSV-backed store (in-memory SQLite query engine)
-│   │   └── quality.py           ← the clean gate + reporting
+│   │   ├── quality.py           ← the clean gate + reporting
+│   │   └── shortlist.py         ← Nuitée-cheaper hotel shortlist (the deliverable)
 │   └── utils/                   ← browser/stealth, selector cascades, pricing, fuzzy text, retry
-├── scripts/generate_input.py    ← city-list presets (morocco/europe/mena/world)
-└── tests/                       ← 273 tests
+├── config/corridors.json        ← client priority corridors (run first, shortlist order)
+├── scripts/generate_input.py    ← city-list presets (priority/morocco/europe/mena/world)
+└── tests/                       ← 283 tests
 ```
 
 **CSV is the store, not a database file.** `prices.csv` / `prices_clean.csv`
@@ -296,6 +384,7 @@ python -m src.cli plan    --dry-run                  # inspect, don't scrape
 python -m src.cli verify  --mode tunnel --limit 500  # repair failures (modes: tunnel/booking/all/unclean)
 python -m src.cli report  --json                     # quality report
 python -m src.cli export  --clean-only --parquet     # export
+python -m src.cli shortlist --min-pct 5              # Nuitée-cheaper hotel shortlist
 python -m src.cli doctor                             # pre-flight check
 ```
 
@@ -317,6 +406,7 @@ make plan                   # print the analysis plan
 make verify                 # repair tunnel + Booking failures
 make report                 # quality report
 make export-clean           # CSV of clean rows only
+make shortlist              # ranked Nuitée-cheaper shortlist (MIN_PCT=10 to tighten)
 
 make logs / shell / stop / clean / nuke
 make test / test-cov / lint / format

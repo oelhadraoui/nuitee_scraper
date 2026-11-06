@@ -40,6 +40,7 @@ from src.utils.browser import (
     is_visible,
     safe_text,
 )
+from src.utils.hotel_ids import IdentityCapture
 from src.utils.logging_setup import get_logger
 from src.utils.pricing import parse_price
 from src.utils.selectors import SelectorRegistry
@@ -75,6 +76,18 @@ class NuiteeScraper:
     # ======================================================================
 
     async def harvest(self, window: SearchWindow) -> list[NuiteeHotel]:
+        """:meth:`_harvest` under the ``timeouts.harvest_hard`` deadline."""
+        budget = self._t.harvest_hard / 1000
+        try:
+            return await asyncio.wait_for(self._harvest(window), timeout=budget)
+        except asyncio.TimeoutError:
+            log.error(
+                "[%s %s] harvest exceeded %.0fs - skipping this window",
+                window.city, window.horizon_label, budget,
+            )
+            return []
+
+    async def _harvest(self, window: SearchWindow) -> list[NuiteeHotel]:
         """
         Fill the search form for ``window`` and harvest the results list.
 
@@ -88,14 +101,28 @@ class NuiteeScraper:
         the only reliable way to populate ``NuiteeHotel.detail_url``.
         """
         async with self.manager.page(referer=self._cfg.url) as (_, page):
-            try:
-                await self._open_and_search(page, window)
-            except Exception as exc:
-                log.error(
-                    "[%s %s] search failed: %s",
-                    window.city, window.horizon_label, exc,
-                )
-                return []
+            # Live 2026-11-04: on a freshly launched browser the first one or
+            # two searches failed within ~4s with "destination input not
+            # found" (Casablanca, Marrakech, Paris), then every later window
+            # worked - a cold-start page, not a broken selector. Each failure
+            # cost a whole window; a fresh navigation fixes it.
+            attempts = 3
+            for attempt in range(1, attempts + 1):
+                try:
+                    await self._open_and_search(page, window)
+                    break
+                except Exception as exc:
+                    if attempt == attempts:
+                        log.error(
+                            "[%s %s] search failed after %d attempts: %s",
+                            window.city, window.horizon_label, attempts, exc,
+                        )
+                        return []
+                    log.warning(
+                        "[%s %s] search attempt %d failed (%s) - reloading",
+                        window.city, window.horizon_label, attempt, exc,
+                    )
+                    await page.wait_for_timeout(2_000 * attempt)
 
             hotels = await self._harvest_results(page, window)
             hotels.sort(
@@ -698,14 +725,32 @@ class NuiteeScraper:
 
         detail_url = self._with_search_params(hotel.detail_url, window)
 
-        try:
+        async def _walk() -> TunnelResult:
             async with self.manager.page(referer=self._cfg.url) as (_, page):
+                # The detail page fetches its own /v1/hotels/details/{id};
+                # reading that response gives the Booking id + coordinates
+                # for free (see src/utils/hotel_ids.py).
+                capture = IdentityCapture(page, detail_url)
                 navigator = TunnelNavigator(
                     page, self.settings, self.registry, hotel_name=hotel.name
                 )
-                return await navigator.run(
+                result = await navigator.run(
                     detail_url, display_price=hotel.display_price
                 )
+                result.identity = await capture.result()
+                return result
+
+        budget = self._t.tunnel_hotel_hard / 1000
+        try:
+            return await asyncio.wait_for(_walk(), timeout=budget)
+        except asyncio.TimeoutError:
+            log.warning("[%s] tunnel exceeded %.0fs - abandoned", hotel.name[:40], budget)
+            return TunnelResult(
+                status=TunnelStatus.ERROR,
+                display_price=hotel.display_price,
+                detail_url=detail_url,
+                error=f"hard timeout: tunnel walk exceeded {budget:.0f}s",
+            )
         except Exception as exc:
             log.warning("[%s] tunnel context failed: %s", hotel.name[:40], exc)
             return TunnelResult(

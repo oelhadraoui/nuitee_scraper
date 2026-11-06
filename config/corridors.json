@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "Client priority corridors, in the client's order. Single source of truth",
+    "for scripts/generate_input.py (the 'priority' preset, run before every",
+    "other city) and src/corridors.py (Country / priority columns of the",
+    "shortlist). City names are the English spellings the Nuitee and Booking",
+    "autocompletes expect. Countries the brief named without cities (Thailand",
+    "onwards) use their main inbound hubs - adjust with the client as needed.",
+    "Algarve and Cappadocia are regions, so their main hotel towns are used."
+  ],
+  "priority": [
+    {"country": "France", "cities": ["Paris", "Lyon", "Nice"]},
+    {"country": "Spain", "cities": ["Madrid", "Barcelona", "Valencia", "Seville", "Malaga"]},
+    {"country": "Portugal", "cities": ["Lisbon", "Porto", "Albufeira", "Faro"]},
+    {"country": "Italy", "cities": ["Milan", "Turin", "Rome", "Florence", "Venice"]},
+    {"country": "Switzerland", "cities": ["Geneva", "Lausanne", "Zurich"]},
+    {"country": "Germany", "cities": ["Berlin", "Munich", "Frankfurt"]},
+    {"country": "Netherlands", "cities": ["Amsterdam", "Maastricht", "Rotterdam"]},
+    {"country": "Belgium", "cities": ["Brussels", "Bruges", "Antwerp"]},
+    {"country": "United Kingdom", "cities": ["London"]},
+    {"country": "Turkey", "cities": ["Istanbul", "Antalya", "Bodrum", "Goreme"]},
+    {"country": "United Arab Emirates", "cities": ["Dubai"]},
+    {"country": "Saudi Arabia", "cities": ["Mecca", "Medina"]},
+    {"country": "Thailand", "cities": ["Bangkok", "Phuket", "Pattaya"]},
+    {"country": "Vietnam", "cities": ["Ho Chi Minh City", "Hanoi", "Da Nang"]},
+    {"country": "China", "cities": ["Shanghai", "Beijing", "Guangzhou"]},
+    {"country": "Malaysia", "cities": ["Kuala Lumpur", "Penang", "Langkawi"]},
+    {"country": "United States", "cities": ["New York", "Miami", "Los Angeles", "Las Vegas", "Orlando"]},
+    {"country": "Canada", "cities": ["Toronto", "Montreal", "Vancouver"]},
+    {"country": "Mexico", "cities": ["Mexico City", "Cancun"]}
+  ]
+}

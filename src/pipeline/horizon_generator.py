@@ -108,6 +108,9 @@ class HorizonPlan:
     offset_labels: list[str] = field(default_factory=list)
     durations_nights: list[int] = field(default_factory=list)
     is_fallback: bool = False
+    #: The first ``priority_count`` entries of ``cities`` are the client's
+    #: priority corridors; their windows all run before any other city's.
+    priority_count: int = 0
 
     def __len__(self) -> int:
         return len(self.windows)
@@ -129,6 +132,7 @@ class HorizonPlan:
             "offsets": self.offset_labels,
             "stay_durations_nights": self.durations_nights,
             "cities": len(self.cities),
+            "priority_cities": self.priority_count,
             "is_fallback": self.is_fallback,
         }
 
@@ -210,12 +214,16 @@ class HorizonGenerator:
         only: Optional[str] = None,
         durations: Optional[Sequence[int]] = None,
         rooms_config: Sequence[int] = (2,),
+        priority_count: int = 0,
     ) -> HorizonPlan:
         """
         Materialise the full plan: ``cities x offsets x durations``.
 
         Ordered offset-major, then duration, then city, so a partial run
         still covers every city for the offset/duration pairs it reached.
+        When ``priority_count`` is set, the first that many cities form a
+        tier of their own that completes every offset x duration before the
+        remaining cities start (each tier ordered as above).
         """
         city_list = [c.strip() for c in cities if c and c.strip()]
         if not city_list:
@@ -235,23 +243,27 @@ class HorizonGenerator:
             only=only,
         )
 
+        priority_count = max(0, min(int(priority_count), len(city_list)))
+        tiers = [city_list[:priority_count], city_list[priority_count:]]
+
         windows: list[SearchWindow] = []
-        for offset in offset_specs:
-            offset_days = (offset.checkin - reference_date).days
-            for nights in duration_list:
-                checkout = offset.checkin + timedelta(days=nights)
-                for city in city_list:
-                    windows.append(
-                        SearchWindow(
-                            city=city,
-                            checkin=offset.checkin,
-                            checkout=checkout,
-                            horizon_label=offset.label,
-                            horizon_offset_days=offset_days,
-                            execution_date=reference_date,
-                            rooms_config=rooms,
+        for tier in tiers:
+            for offset in offset_specs:
+                offset_days = (offset.checkin - reference_date).days
+                for nights in duration_list:
+                    checkout = offset.checkin + timedelta(days=nights)
+                    for city in tier:
+                        windows.append(
+                            SearchWindow(
+                                city=city,
+                                checkin=offset.checkin,
+                                checkout=checkout,
+                                horizon_label=offset.label,
+                                horizon_offset_days=offset_days,
+                                execution_date=reference_date,
+                                rooms_config=rooms,
+                            )
                         )
-                    )
 
         plan = HorizonPlan(
             windows=windows,
@@ -260,6 +272,7 @@ class HorizonGenerator:
             offset_labels=[o.label for o in offset_specs],
             durations_nights=list(duration_list),
             is_fallback=use_fallback_long_offset,
+            priority_count=priority_count,
         )
         log.info("Analysis plan: %s", plan.describe())
         return plan
@@ -310,11 +323,13 @@ def plan_from_city_entries(
     Accepts both the legacy shape (``{"city", "checkin", "checkout"}``) and
     the current shape (``{"city", "rooms_config"}``). Legacy
     ``checkin``/``checkout`` values are ignored on purpose: dates are always
-    derived from today plus the configured offsets.
+    derived from today plus the configured offsets. Entries flagged
+    ``"priority": true`` are moved to the front and run as their own tier.
     """
     generator = HorizonGenerator(settings)
 
-    cities: list[str] = []
+    priority: list[str] = []
+    others: list[str] = []
     rooms_config: tuple[int, ...] = (2,)
     seen: set[str] = set()
 
@@ -323,7 +338,7 @@ def plan_from_city_entries(
         if not city or city.lower() in seen:
             continue
         seen.add(city.lower())
-        cities.append(city)
+        (priority if entry.get("priority") else others).append(city)
 
         if entry.get("rooms_config"):
             rooms_config = tuple(int(a) for a in entry["rooms_config"])
@@ -333,9 +348,10 @@ def plan_from_city_entries(
             rooms_config = tuple([adults] * n_rooms)
 
     return generator.build_plan(
-        cities,
+        priority + others,
         reference_date=reference_date,
         only=only,
         durations=durations,
         rooms_config=rooms_config,
+        priority_count=len(priority),
     )

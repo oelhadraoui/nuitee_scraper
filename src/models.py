@@ -247,6 +247,9 @@ class TunnelResult:
     """
 
     status: TunnelStatus = TunnelStatus.NOT_ATTEMPTED
+    #: The hotel's IDs and location, read off the detail page's own API
+    #: response while the tunnel walks it (see HotelIdentity).
+    identity: Optional["HotelIdentity"] = None
     final_price: Optional[float] = None      # true payable total for the stay, MAD
     display_price: Optional[float] = None    # per-night listing price, MAD
     local_fees: Optional[float] = None       # "Local fees" line, READ off the
@@ -283,6 +286,40 @@ class TunnelResult:
 
 
 @dataclass(slots=True)
+class HotelIdentity:
+    """
+    Who a Nuitee hotel IS, independent of how its name is spelled.
+
+    Nuitee runs on LiteAPI, whose hotel content is sourced from Booking.com.
+    The detail page loads ``/v1/hotels/details/{id}``, and live-verified
+    2026-11 on 9 hotels across 8 cities: its ``latitude``/``longitude``
+    equal Booking's to 6 decimals (8/8), and its ``thirdPartyId`` IS the
+    Booking.com hotel id (4/4 where present; it is empty for roughly half
+    of hotels). That gives Booking matching two signals far stronger than a
+    fuzzy name score: an exact id, and a distance.
+    """
+
+    nuitee_hotel_id: Optional[str] = None     # LiteAPI id, e.g. "lp67c32"
+    booking_hotel_id: Optional[str] = None    # Booking.com id ("thirdPartyId")
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    address: Optional[str] = None
+    stars: Optional[float] = None
+
+    @property
+    def has_location(self) -> bool:
+        return self.latitude is not None and self.longitude is not None
+
+
+class MatchMethod(str, Enum):
+    """How a Booking.com card was identified as the same hotel."""
+
+    BOOKING_ID = "booking_id"   # card's Booking id == the hotel's known id
+    GEO = "geo"                 # within geo_match_m, with a plausible name
+    NAME = "name"               # fuzzy name score only (no usable ids/coords)
+
+
+@dataclass(slots=True)
 class NuiteeHotel:
     """A hotel harvested from the Nuitee results page."""
 
@@ -310,6 +347,12 @@ class BookingResult:
     url: Optional[str] = None
     attempts: int = 0
     error: Optional[str] = None
+    #: How the card was matched (MatchMethod value), None when no match.
+    match_method: Optional[str] = None
+    #: The matched card's Booking.com hotel id, when the page exposed it.
+    booking_hotel_id: Optional[str] = None
+    #: Metres between the Nuitee hotel and the matched card, when both known.
+    distance_m: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +426,7 @@ class PriceRecord:
     tunnel_deepest_panel: str = PanelKind.UNKNOWN.value
     tunnel_panels_visited: str = ""
     nuitee_url: Optional[str] = None
+    nuitee_hotel_id: Optional[str] = None
 
     # --- Booking -----------------------------------------------------------
     booking_price: Optional[float] = None
@@ -390,6 +434,9 @@ class PriceRecord:
     fuzzy_score: float = 0.0
     match_status: str = MatchStatus.SKIPPED.value
     booking_url: Optional[str] = None
+    booking_hotel_id: Optional[str] = None
+    match_method: Optional[str] = None
+    match_distance_m: Optional[float] = None
 
     # --- derived -----------------------------------------------------------
     #: "National (Morocco)" or "International" - recomputed from `city`
@@ -473,6 +520,8 @@ CSV_COLUMNS: list[str] = [
     "booking_price",
     "booking_matched_name",
     "fuzzy_score",
+    "match_method",
+    "match_distance_m",
     "price_difference",
     "price_difference_pct",
     "cheaper_platform",
@@ -481,6 +530,8 @@ CSV_COLUMNS: list[str] = [
     "is_clean",
     "quality_flags",
     "scraped_at",
+    "nuitee_hotel_id",
+    "booking_hotel_id",
     "nuitee_url",
     "booking_url",
 ]
@@ -504,6 +555,8 @@ CSV_HEADER_ALIASES: dict[str, str] = {
     "booking_price": "Booking Price (MAD, whole stay)",
     "booking_matched_name": "Booking Matched Name",
     "fuzzy_score": "Fuzzy Score",
+    "match_method": "Match Method",
+    "match_distance_m": "Match Distance (m)",
     "price_difference": "Price Difference (MAD)",
     "price_difference_pct": "Price Difference (%)",
     "cheaper_platform": "Cheaper Platform",
@@ -512,6 +565,8 @@ CSV_HEADER_ALIASES: dict[str, str] = {
     "is_clean": "Clean",
     "quality_flags": "Quality Flags",
     "scraped_at": "Scraped At",
+    "nuitee_hotel_id": "Nuitee Hotel ID",
+    "booking_hotel_id": "Booking Hotel ID",
     "nuitee_url": "Nuitee URL",
     "booking_url": "Booking URL",
 }
