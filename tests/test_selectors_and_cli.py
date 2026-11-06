@@ -205,6 +205,21 @@ class TestInputFormats:
         args = type("A", (), {"input": path, "cities": None})()
         assert _load_cities(args)[0]["city"] == "Paris"
 
+    def test_priority_cities_flagged(self, tmp_path: Path) -> None:
+        from src.cli import _load_cities
+
+        path = tmp_path / "input.json"
+        path.write_text(
+            json.dumps({"version": 2, "rooms_config": [2],
+                        "priority_cities": ["Paris"],
+                        "cities": ["Paris", "Casablanca"]}),
+            encoding="utf-8",
+        )
+        args = type("A", (), {"input": path, "cities": None})()
+        entries = _load_cities(args)
+        assert entries[0].get("priority") is True
+        assert "priority" not in entries[1]
+
     def test_cities_flag_overrides_file(self, tmp_path: Path) -> None:
         from src.cli import _load_cities
 

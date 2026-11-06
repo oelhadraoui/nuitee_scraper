@@ -203,3 +203,39 @@ class TestPlanFromEntries:
             entries, settings, reference_date=REF, only="short"
         )
         assert {w.horizon_label for w in plan} == {"1W"}
+
+
+class TestPriorityTier:
+    def test_priority_cities_complete_every_window_first(
+        self, generator: HorizonGenerator
+    ) -> None:
+        plan = generator.build_plan(
+            ["Paris", "Rome", "Casablanca"], reference_date=REF, priority_count=2
+        )
+        cities = [w.city for w in plan.windows]
+        # 2 priority cities x 2 offsets x 2 durations, before Casablanca starts.
+        assert set(cities[:8]) == {"Paris", "Rome"}
+        assert cities[8:] == ["Casablanca"] * 4
+        assert plan.priority_count == 2
+        assert plan.summary()["priority_cities"] == 2
+
+    def test_each_tier_stays_offset_major(self, generator: HorizonGenerator) -> None:
+        plan = generator.build_plan(["Paris", "Fes"], reference_date=REF, priority_count=1)
+        assert [w.horizon_label for w in plan.windows] == ["1W", "1W", "3M", "3M"] * 2
+
+    def test_no_priority_keeps_default_order(self, generator: HorizonGenerator) -> None:
+        plain = generator.build_plan(["A", "B"], reference_date=REF)
+        tiered = generator.build_plan(["A", "B"], reference_date=REF, priority_count=0)
+        assert plain.windows == tiered.windows
+
+    def test_entries_flagged_priority_move_to_front(
+        self, settings: HorizonSettings
+    ) -> None:
+        plan = plan_from_city_entries(
+            [{"city": "Fes"}, {"city": "Paris", "priority": True}],
+            settings,
+            reference_date=REF,
+        )
+        assert plan.cities == ["Paris", "Fes"]
+        assert plan.priority_count == 1
+        assert plan.windows[0].city == "Paris"

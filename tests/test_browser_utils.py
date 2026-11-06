@@ -72,3 +72,18 @@ class TestSafeTextNoStrike:
 
         plain = PlainLocator(evaluate_result="MAD 980.00")
         assert await safe_text_no_strike(locator) == await safe_text(plain)
+
+
+class TestFingerprintHeaders:
+    def test_no_sec_fetch_overrides(self) -> None:
+        """
+        Context-wide headers hit every request; a forced Sec-Fetch-* made
+        Chromium reject the Nuitee app's own JS/CSS (blank page, live
+        2026-11-04). Chromium sets these correctly by itself.
+        """
+        from src.utils.browser import FINGERPRINTS
+
+        for fingerprint in FINGERPRINTS:
+            assert not any(
+                name.lower().startswith("sec-fetch-") for name in fingerprint.headers()
+            )

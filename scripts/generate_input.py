@@ -13,8 +13,12 @@ dates in the input would defeat the point of always measuring "as of today".
     {
       "version": 2,
       "rooms_config": [2],
-      "cities": ["Casablanca", "Marrakech", ...]
+      "priority_cities": ["Paris", "Lyon", ...],
+      "cities": ["Paris", "Lyon", ..., "Casablanca", ...]
     }
+
+``priority_cities`` (the client's corridors, from ``config/corridors.json``)
+are scraped through every offset x duration before any other city starts.
 
 The legacy array-of-objects format is still accepted by the CLI; any
 ``checkin``/``checkout`` keys in it are ignored.
@@ -22,6 +26,7 @@ The legacy array-of-objects format is still accepted by the CLI; any
 Usage
 -----
     python scripts/generate_input.py                       # default set
+    python scripts/generate_input.py --preset priority     # client corridors only
     python scripts/generate_input.py --preset morocco
     python scripts/generate_input.py --cities "Paris,Rome" --adults 2 --rooms 1
     python scripts/generate_input.py --preview-plan --durations 3,10
@@ -34,7 +39,18 @@ import json
 from datetime import date
 from pathlib import Path
 
+CORRIDORS_PATH = Path(__file__).resolve().parent.parent / "config" / "corridors.json"
+
+
+def load_priority_cities(path: Path = CORRIDORS_PATH) -> list[str]:
+    """The client's priority corridors, flattened in the client's order."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return [city for group in data["priority"] for city in group["cities"]]
+
+
 PRESETS: dict[str, list[str]] = {
+    # Client-specified corridors - always run first (see config/corridors.json).
+    "priority": load_priority_cities(),
     # Domestic inventory - densest coverage on a Morocco-facing white-label,
     # and therefore the fastest route to the 1,000-clean-hotel target.
     "morocco": [
@@ -63,8 +79,9 @@ PRESETS: dict[str, list[str]] = {
     ],
 }
 
-#: Default: domestic first (best inventory), then Europe, then the rest.
-DEFAULT_PRESETS = ["morocco", "europe", "mena", "world"]
+#: Default: the client's priority corridors first, then domestic (best
+#: inventory), then Europe, then the rest.
+DEFAULT_PRESETS = ["priority", "morocco", "europe", "mena", "world"]
 
 
 def build_city_list(presets: list[str], extra: list[str]) -> list[str]:
@@ -113,7 +130,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--preset", action="append", choices=[*list(PRESETS), "all"], default=None,
-        help="City preset (repeatable). Default: all, domestic first.",
+        help="City preset (repeatable). Default: all, priority corridors first.",
     )
     parser.add_argument("--cities", default="", help="Extra comma-separated cities")
     parser.add_argument("--adults", type=int, default=2, help="Adults per room")
@@ -140,6 +157,8 @@ def main() -> None:
     extra = [c for c in args.cities.split(",") if c.strip()]
     cities = build_city_list(presets, extra)
     rooms_config = [args.adults] * args.rooms
+    priority = {c.lower() for c in PRESETS["priority"]} if "priority" in presets else set()
+    priority_cities = [c for c in cities if c.lower() in priority]
 
     if args.legacy_format:
         today = date.today().isoformat()
@@ -150,6 +169,7 @@ def main() -> None:
                 "checkout": today,
                 "adults": args.adults,
                 "rooms": args.rooms,
+                **({"priority": True} if city in priority_cities else {}),
             }
             for city in cities
         ]
@@ -163,6 +183,7 @@ def main() -> None:
                 "Do not hard-code them here."
             ),
             "rooms_config": rooms_config,
+            "priority_cities": priority_cities,
             "cities": cities,
         }
 
@@ -170,7 +191,10 @@ def main() -> None:
     args.output.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    print(f"Wrote {len(cities)} cities to {args.output}")
+    print(
+        f"Wrote {len(cities)} cities to {args.output}"
+        f" ({len(priority_cities)} priority, scraped first)"
+    )
 
     if args.preview_plan:
         durations = [int(d.strip()) for d in args.durations.split(",") if d.strip()]

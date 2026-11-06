@@ -275,7 +275,7 @@ class TestLookupRetryPolicy:
     ) -> None:
         calls = 0
 
-        async def fake_lookup_once(_window, _name):
+        async def fake_lookup_once(_window, _name, _identity=None):
             nonlocal calls
             calls += 1
             return BookingResult(status=MatchStatus.MATCH_FAIL, error="scored too low")
@@ -292,7 +292,7 @@ class TestLookupRetryPolicy:
     ) -> None:
         calls = 0
 
-        async def fake_lookup_once(_window, _name):
+        async def fake_lookup_once(_window, _name, _identity=None):
             nonlocal calls
             calls += 1
             return BookingResult(status=MatchStatus.NO_RESULTS)
@@ -308,7 +308,7 @@ class TestLookupRetryPolicy:
     ) -> None:
         calls = 0
 
-        async def fake_lookup_once(_window, _name):
+        async def fake_lookup_once(_window, _name, _identity=None):
             nonlocal calls
             calls += 1
             raise RuntimeError("transient navigation failure")
@@ -325,7 +325,7 @@ class TestLookupRetryPolicy:
     ) -> None:
         calls = 0
 
-        async def fake_lookup_once(_window, _name):
+        async def fake_lookup_once(_window, _name, _identity=None):
             nonlocal calls
             calls += 1
             return BookingResult(status=MatchStatus.OK, price=1000.0)
@@ -343,7 +343,7 @@ class TestLookupRetryPolicy:
         """A single flaky attempt should still resolve to a real match."""
         calls = 0
 
-        async def fake_lookup_once(_window, _name):
+        async def fake_lookup_once(_window, _name, _identity=None):
             nonlocal calls
             calls += 1
             if calls == 1:
@@ -362,7 +362,7 @@ class TestLookupRetryPolicy:
     ) -> None:
         calls = 0
 
-        async def fake_lookup_once(_window, _name):
+        async def fake_lookup_once(_window, _name, _identity=None):
             nonlocal calls
             calls += 1
             raise BookingBlockedError("captcha / bot-check page served")

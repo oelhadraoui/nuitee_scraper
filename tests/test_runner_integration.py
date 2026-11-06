@@ -90,7 +90,7 @@ class FakeBooking:
     def __init__(self) -> None:
         self.queried: list[str] = []
 
-    async def lookup_many(self, window, hotel_names):
+    async def lookup_many(self, window, hotel_names, identities=None):
         self.queried.extend(hotel_names)
         # Booking's card price is already a whole-stay total (live-verified
         # 2026-07), so it scales with nights just like Nuitee's final_price.
