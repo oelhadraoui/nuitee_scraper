@@ -31,6 +31,7 @@ from urllib.parse import urljoin
 from playwright.async_api import Page
 
 from src.config import Settings
+from src.corridors import country_labels
 from src.models import NuiteeHotel, SearchWindow, TunnelResult, TunnelStatus
 from src.scrapers.tunnel import TunnelNavigator
 from src.utils.browser import (
@@ -44,7 +45,7 @@ from src.utils.hotel_ids import IdentityCapture
 from src.utils.logging_setup import get_logger
 from src.utils.pricing import parse_price
 from src.utils.selectors import SelectorRegistry
-from src.utils.text import normalise_display, normalise_key
+from src.utils.text import normalise_display, normalise_key, parse_distance_km
 
 log = get_logger(__name__)
 
@@ -268,24 +269,23 @@ class NuiteeScraper:
 
             log.debug("destination suggestion retry %d for %r", attempt + 1, city)
 
-        # Last resort: commit the typed text.
-        try:
-            await field.press("Enter")
-        except Exception as exc:
-            raise NuiteeSearchError(
-                f"no destination suggestion matched {city!r}"
-            ) from exc
+        # No suggestion is the city itself. Pressing Enter (or clicking the
+        # first row) is what scraped "Rome" in Romania and "Faro" in the
+        # Faroe Islands - better to lose the window than to store it.
+        raise NuiteeSearchError(f"no destination suggestion matched {city!r}")
 
     async def _click_city_suggestion(
         self, page: Page, cascade, city: str
     ) -> bool:
         """
-        Choose the CITY suggestion, not an airport/region/landmark.
+        Choose the CITY suggestion, not an airport, a namesake or a hotel.
 
-        Picking "Paris Charles de Gaulle Airport" instead of "Paris" silently
-        collapses the result set - a classic source of low hotel counts.
+        Rows read "<place> / <where>" ("Faro / Portugal", "Faroe Islands",
+        "Venice Beach / CA, USA"), so see :func:`pick_city_suggestion`. Live
+        2026-11: picking the shortest matching label scraped Turin in
+        Thuringia, Faro in the Faroe Islands and Venice in Los Angeles.
         """
-        exclude = ("airport", "aeroport", "region", "province", "station", "district")
+        countries = country_labels(city)
 
         for candidate in cascade.candidates:
             try:
@@ -297,33 +297,18 @@ class NuiteeScraper:
             except Exception:
                 continue
 
-            best_index: Optional[int] = None
-            best_rank = 99
+            texts = [await safe_text(items.nth(i), timeout=500) for i in range(count)]
+            best_index = pick_city_suggestion(texts, city, countries)
+            if best_index is None:
+                log.debug("no city suggestion for %r among %r", city, texts)
+                continue
 
-            for index in range(count):
-                text = await safe_text(items.nth(index), timeout=500)
-                if not text:
-                    continue
-                lowered = text.lower()
-                if any(token in lowered for token in exclude):
-                    continue
-                if normalise_key(city) not in normalise_key(text):
-                    continue
-                # Rank: shorter label == more likely the bare city entry.
-                rank = len(text)
-                if rank < best_rank:
-                    best_rank, best_index = rank, index
-
-            if best_index is None and count:
-                best_index = 0
-
-            if best_index is not None:
-                try:
-                    await items.nth(best_index).click(timeout=4_000)
-                    await page.wait_for_timeout(400)
-                    return True
-                except Exception:
-                    continue
+            try:
+                await items.nth(best_index).click(timeout=4_000)
+                await page.wait_for_timeout(400)
+                return True
+            except Exception:
+                continue
 
         return False
 
@@ -545,6 +530,7 @@ class NuiteeScraper:
         eol_cascade = self.registry.get_optional("nuitee.end_of_results")
 
         collected: dict[str, NuiteeHotel] = {}
+        too_far: set[str] = set()
         stalls = 0
         scroll_step = 600
         started = datetime.now()
@@ -552,7 +538,7 @@ class NuiteeScraper:
 
         for pass_index in range(self._cfg.max_scroll_passes):
             added = await self._harvest_visible_cards(
-                page, card_cascade, collected, base_url
+                page, card_cascade, collected, base_url, too_far
             )
 
             elapsed = (datetime.now() - started).total_seconds()
@@ -584,13 +570,18 @@ class NuiteeScraper:
             if await eol_cascade.any_present(page, timeout=200):
                 log.debug("[%s] end-of-results marker", window.city)
                 await self._harvest_visible_cards(
-                    page, card_cascade, collected, base_url
+                    page, card_cascade, collected, base_url, too_far
                 )
                 break
 
             await human_scroll(page, scroll_step, steps=3)
             await page.wait_for_timeout(self._t.scroll_settle)
 
+        if too_far:
+            log.info(
+                "[%s] dropped %d result(s) more than %g km from the centre",
+                window.city, len(too_far), self._cfg.max_distance_km,
+            )
         return list(collected.values())
 
     async def _harvest_visible_cards(
@@ -599,9 +590,14 @@ class NuiteeScraper:
         card_cascade,
         collected: dict[str, NuiteeHotel],
         base_url: str,
+        too_far: set[str],
     ) -> int:
         """
         Parse rendered cards into ``collected``, keyed by normalised name.
+
+        Cards further than ``NUITEE_MAX_DISTANCE_KM`` from the centre go into
+        ``too_far`` instead: they still count as progress for stall
+        detection, but never reach the tunnel or the output.
 
         Only the tail of the list is scanned on each pass: virtualised lists
         re-render constantly, and re-parsing 800 cards every pass is what made
@@ -628,7 +624,14 @@ class NuiteeScraper:
                     continue
                 name = normalise_display(raw_name)
                 key = normalise_key(name)
-                if not key or key in collected:
+                if not key or key in collected or key in too_far:
+                    continue
+
+                max_km = self._cfg.max_distance_km
+                distance_km = parse_distance_km(await card.inner_text(timeout=500))
+                if max_km and distance_km is not None and distance_km > max_km:
+                    too_far.add(key)
+                    added += 1
                     continue
 
                 raw_price = await price_cascade.text(card, timeout=500)
@@ -662,6 +665,7 @@ class NuiteeScraper:
                     rating=rating,
                     detail_url=detail_url,
                     card_index=index,
+                    distance_km=distance_km,
                 )
                 added += 1
             except Exception:
@@ -799,4 +803,36 @@ def _parse_month_year(text: str) -> Optional[tuple[int, int]]:
             return parsed.year, parsed.month
         except ValueError:
             continue
+    return None
+
+
+_NON_CITY = ("airport", "aeroport", "station", "district", "region", "province")
+
+
+def pick_city_suggestion(
+    texts: list[str], city: str, countries: tuple[str, ...] = ()
+) -> Optional[int]:
+    """
+    Index of the autocomplete row that IS ``city``, or ``None``.
+
+    Only a row whose place name (the part before " / ") equals the city is
+    eligible - prefixes ("Faroe Islands" for Faro), longer names ("Medina
+    del Campo") and hotels named after the city never are. When the city's
+    country is known, the row must also name it ("Los Angeles / CA, USA",
+    not "Los Ángeles / Chile"). Ties go to the earliest row: Nuitee lists
+    its best guess first.
+    """
+    target = normalise_key(city)
+    wanted = [normalise_key(c) for c in countries]
+    for index, text in enumerate(texts):
+        place, _, where = (text or "").replace("\n", " / ").partition(" / ")
+        if normalise_key(place) != target:
+            continue
+        if any(token in place.lower() for token in _NON_CITY):
+            continue
+        # Hotel/address rows carry a street ("Cancun / PASEO NEPTUNO,65,
+        # Gandia"); a country check rules those out when one is known.
+        if wanted and not any(w in normalise_key(where) for w in wanted):
+            continue
+        return index
     return None

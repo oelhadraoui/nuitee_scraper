@@ -342,6 +342,13 @@ class NuiteeSettings(BaseSettings):
     #: Parallel tunnel walks. Kept low - the tunnel is stateful and heavy.
     tunnel_concurrency: int = Field(default=3, ge=1, le=16)
 
+    #: Results further than this from the searched city's centre are dropped
+    #: at harvest. Nuitee pads small-city results with cheap listings from
+    #: across the country (a "Tangier" search lists Rabat at 225 km, Casablanca
+    #: at 315 km), and cheapest-first selection then prefers them - so they
+    #: end up labelled with the wrong city. 0 disables the filter.
+    max_distance_km: float = Field(default=30.0, ge=0)
+
     max_scroll_passes: int = Field(default=400, ge=5, le=5_000)
     max_scroll_seconds: int = Field(default=420, ge=10, le=7_200)
     scroll_stall_limit: int = Field(default=4, ge=1, le=20)
@@ -452,6 +459,11 @@ class QualitySettings(BaseSettings):
     #: Reject a comparison when the two sites disagree by more than this ratio;
     #: almost always signals a mis-match rather than a real price gap.
     max_price_ratio: float = Field(default=12.0, gt=1.0)
+
+    #: On a multi-night stay, reject a price below this fraction of
+    #: (Nuitee per-night display price x nights): it is a one-night price,
+    #: not the whole stay. 0 disables the check.
+    min_stay_price_fraction: float = Field(default=0.4, ge=0.0, lt=1.0)
 
     #: Deduplication key components.
     dedup_keys: CsvList = Field(

@@ -58,6 +58,10 @@ PRESETS: dict[str, list[str]] = {
         "Essaouira", "Meknes", "Chefchaouen", "Ouarzazate", "Dakhla",
         "El Jadida", "Ifrane", "Oujda", "Tetouan", "Nador", "Saidia",
         "Merzouga", "Taghazout", "Asilah",
+        "Mohammedia", "Kenitra", "Bouznika", "Safi", "Oualidia", "Larache",
+        "Martil", "Fnideq", "Al Hoceima", "Beni Mellal", "Taroudant",
+        "Tiznit", "Mirleft", "Sidi Ifni", "Laayoune", "Zagora", "Tinghir",
+        "Errachidia", "Midelt", "Azrou", "Imlil",
     ],
     # Short-haul markets with high Moroccan outbound demand.
     "europe": [
