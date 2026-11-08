@@ -118,6 +118,27 @@ def contains_city(name: str, city: str) -> bool:
     return normalise_key(city) in normalise_key(name)
 
 
+_DISTANCE_RE = re.compile(
+    r"(\d+(?:[.,]\d+)?)\s*(km|m)\s+from\s+(?:the\s+)?cent(?:re|er)",
+    re.IGNORECASE,
+)
+
+
+def parse_distance_km(text: str) -> float | None:
+    """
+    Distance in km from a "3 km from centre" / "850 m from center" card line,
+    or ``None`` when the text carries no distance.
+    """
+    match = _DISTANCE_RE.search(text or "")
+    if not match:
+        return None
+    raw = match.group(1)
+    # "1,234 km" is a thousands separator; "12,4 km" a decimal comma.
+    raw = raw.replace(",", "") if re.fullmatch(r"\d{1,3},\d{3}", raw) else raw.replace(",", ".")
+    value = float(raw)
+    return value / 1000 if match.group(2).lower() == "m" else value
+
+
 def slugify(value: str, max_length: int = 60) -> str:
     """Filesystem-safe slug, used for debug artefact filenames."""
     text = strip_accents(value).lower()

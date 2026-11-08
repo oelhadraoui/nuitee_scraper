@@ -89,6 +89,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import re
 import urllib.parse
 from dataclasses import dataclass
 from typing import Optional
@@ -485,7 +486,7 @@ class BookingScraper:
                 # original name match uses), so reuse it here instead.
                 name_cascade = self.registry.get("booking.card_name")
                 reread_raw = await name_cascade.text(cards.nth(index), timeout=700)
-                reread_name = normalise_display(reread_raw) if reread_raw else None
+                reread_name = _card_name(reread_raw) if reread_raw else None
                 agreement = fuzzy_score(matched_name or "", reread_name or "")
 
                 if agreement < self._cfg.fuzzy_threshold_strict:
@@ -815,7 +816,7 @@ class BookingScraper:
             raw = await name_cascade.text(card, timeout=700)
             if not raw:
                 continue
-            name = normalise_display(raw)
+            name = _card_name(raw)
             candidate = _Candidate(index, name, fuzzy_score(expected, name))
 
             if use_props:
@@ -962,3 +963,13 @@ class BookingScraper:
             except Exception:
                 pass
         return fallback
+
+
+#: Screen-reader suffix some card_name selectors include (see the re-read
+#: note in _lookup_once); it ended up in the CSV's "Booking Matched Name".
+_NEW_WINDOW_RE = re.compile(r"\s*Opens in (?:a )?new window\s*$", re.IGNORECASE)
+
+
+def _card_name(raw: str) -> str:
+    """A Booking card's hotel name, without the "Opens in new window" label."""
+    return normalise_display(_NEW_WINDOW_RE.sub("", raw))

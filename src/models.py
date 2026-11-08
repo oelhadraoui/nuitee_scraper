@@ -329,6 +329,8 @@ class NuiteeHotel:
     rating: Optional[float] = None
     detail_url: Optional[str] = None
     card_index: int = 0
+    #: "X km from centre" as shown on the card, relative to the searched city.
+    distance_km: Optional[float] = None
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +375,10 @@ MOROCCO_CITIES: frozenset[str] = frozenset(
         "Essaouira", "Meknes", "Chefchaouen", "Ouarzazate", "Dakhla",
         "El Jadida", "Ifrane", "Oujda", "Tetouan", "Nador", "Saidia",
         "Merzouga", "Taghazout", "Asilah",
+        "Mohammedia", "Kenitra", "Bouznika", "Safi", "Oualidia", "Larache",
+        "Martil", "Fnideq", "Al Hoceima", "Beni Mellal", "Taroudant",
+        "Tiznit", "Mirleft", "Sidi Ifni", "Laayoune", "Zagora", "Tinghir",
+        "Errachidia", "Midelt", "Azrou", "Imlil",
     )
 )
 

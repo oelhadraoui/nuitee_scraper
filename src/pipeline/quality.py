@@ -18,6 +18,8 @@ A record is CLEAN when every one of these holds:
     C7  price ratio between the two sites <= max_price_ratio
     C8  all identity fields present (hotel, city, checkin, checkout, horizon)
     C9  checkout > checkin                (internally consistent stay)
+    C10 the Booking hotel is in the city's country (when both are known)
+    C11 neither price is a one-night price on a multi-night stay
 
 Anything failing one or more checks is retained with ``is_clean = 0`` and a
 ``quality_flags`` string listing exactly which checks failed. Nothing is
@@ -29,12 +31,14 @@ problem.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
 from src.config import Settings
+from src.corridors import country_code_for
 from src.models import MatchStatus, PriceRecord, TunnelStatus
 from src.utils.logging_setup import get_logger
 
@@ -57,6 +61,12 @@ class QualityFlag:
     IMPLAUSIBLE_RATIO = "IMPLAUSIBLE_RATIO"
     MISSING_IDENTITY = "MISSING_IDENTITY"
     INVALID_DATES = "INVALID_DATES"
+    WRONG_COUNTRY = "WRONG_COUNTRY"
+    PRICE_NOT_WHOLE_STAY = "PRICE_NOT_WHOLE_STAY"
+
+
+#: Booking.com hotel URLs carry the country: /hotel/<iso>/<slug>.html
+_BOOKING_COUNTRY_RE = re.compile(r"booking\.com/hotel/([a-z]{2})/", re.IGNORECASE)
 
 
 @dataclass(slots=True)
@@ -297,6 +307,30 @@ class QualityGate:
             low = min(record.nuitee_final_price, record.booking_price)
             if low > 0 and (high / low) > self._q.max_price_ratio:
                 flags.append(QualityFlag.IMPLAUSIBLE_RATIO)
+
+        # -- C10: right country -------------------------------------------
+        # Both sites agree on the hotel, so C1-C7 pass even when the search
+        # itself landed in the wrong place (live 2026-11: "Rome" scraped in
+        # Romania, "Faro" in the Faroe Islands). The Booking URL says where
+        # the hotel really is.
+        expected = country_code_for(record.city)
+        found = _BOOKING_COUNTRY_RE.search(record.booking_url or "")
+        if expected and found and found.group(1).lower() != expected:
+            flags.append(QualityFlag.WRONG_COUNTRY)
+
+        # -- C11: whole-stay prices ---------------------------------------
+        # A one-night price on a 3- or 10-night stay is ~1/nights of the
+        # stay; the cross-site ratio (C7) misses it on Nuitee's side when
+        # nights < max_price_ratio. Live 2026-11: Merzouga 10n priced at
+        # one night on Nuitee, Kuala Lumpur 10n at one night on Booking.
+        fraction = self._q.min_stay_price_fraction
+        if fraction and record.nights > 1 and record.nuitee_display_price:
+            floor = fraction * record.nuitee_display_price * record.nights
+            if any(
+                price is not None and price < floor
+                for price in (record.nuitee_final_price, record.booking_price)
+            ):
+                flags.append(QualityFlag.PRICE_NOT_WHOLE_STAY)
 
         record.quality_flags = ";".join(flags)
         record.is_clean = not flags

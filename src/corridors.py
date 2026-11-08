@@ -18,7 +18,16 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-__all__ = ["CORRIDORS_PATH", "CityCorridor", "corridor_for"]
+from src.models import MOROCCO_CITIES
+
+__all__ = [
+    "CORRIDORS_PATH",
+    "CityCorridor",
+    "corridor_for",
+    "country_for",
+    "country_code_for",
+    "country_labels",
+]
 
 CORRIDORS_PATH = Path(__file__).resolve().parent.parent / "config" / "corridors.json"
 
@@ -47,3 +56,50 @@ def corridor_for(city: str, path: Path = CORRIDORS_PATH) -> Optional[CityCorrido
     """The city's priority corridor, or ``None`` for a non-priority city."""
     return _load(path).get((city or "").strip().lower())
 
+
+
+#: ISO code (as in Booking.com hotel URLs, ``/hotel/<code>/``) and the
+#: spellings Nuitee's autocomplete uses for each country - live-read
+#: 2026-11: "London / UK", "New York / NY, USA", "Bodrum / Mugla, Türkiye".
+_COUNTRIES: dict[str, tuple[str, tuple[str, ...]]] = {
+    "Morocco": ("ma", ("Morocco",)),
+    "France": ("fr", ("France",)),
+    "Spain": ("es", ("Spain",)),
+    "Portugal": ("pt", ("Portugal",)),
+    "Italy": ("it", ("Italy",)),
+    "Switzerland": ("ch", ("Switzerland",)),
+    "Germany": ("de", ("Germany",)),
+    "Netherlands": ("nl", ("Netherlands",)),
+    "Belgium": ("be", ("Belgium",)),
+    "United Kingdom": ("gb", ("United Kingdom", "UK")),
+    "Turkey": ("tr", ("Turkey", "Türkiye")),
+    "United Arab Emirates": ("ae", ("United Arab Emirates", "UAE")),
+    "Saudi Arabia": ("sa", ("Saudi Arabia",)),
+    "Thailand": ("th", ("Thailand",)),
+    "Vietnam": ("vn", ("Vietnam", "Viet Nam")),
+    "China": ("cn", ("China",)),
+    "Malaysia": ("my", ("Malaysia",)),
+    "United States": ("us", ("United States", "USA")),
+    "Canada": ("ca", ("Canada",)),
+    "Mexico": ("mx", ("Mexico",)),
+}
+
+
+def country_for(city: str, path: Path = CORRIDORS_PATH) -> Optional[str]:
+    """The city's country, or ``None`` when the city is in neither list."""
+    if (city or "").strip().lower() in MOROCCO_CITIES:
+        return "Morocco"
+    corridor = corridor_for(city, path)
+    return corridor.country if corridor else None
+
+
+def country_code_for(city: str, path: Path = CORRIDORS_PATH) -> Optional[str]:
+    """Lower-case ISO code of the city's country, or ``None`` if unknown."""
+    info = _COUNTRIES.get(country_for(city, path) or "")
+    return info[0] if info else None
+
+
+def country_labels(city: str, path: Path = CORRIDORS_PATH) -> tuple[str, ...]:
+    """How Nuitee's autocomplete may write the city's country (empty if unknown)."""
+    info = _COUNTRIES.get(country_for(city, path) or "")
+    return info[1] if info else ()
