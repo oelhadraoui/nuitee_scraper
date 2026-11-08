@@ -31,7 +31,7 @@ from urllib.parse import urljoin
 from playwright.async_api import Page
 
 from src.config import Settings
-from src.corridors import country_labels
+from src.corridors import country_labels, nuitee_place_name
 from src.models import NuiteeHotel, SearchWindow, TunnelResult, TunnelStatus
 from src.scrapers.tunnel import TunnelNavigator
 from src.utils.browser import (
@@ -239,7 +239,7 @@ class NuiteeScraper:
         if self._overlays:
             await dismiss_overlays(page, self._overlays)
 
-        await self._fill_destination(page, window.city)
+        await self._fill_destination(page, nuitee_place_name(window.city))
         await self._fill_dates(page, window.checkin, window.checkout)
         await self._fill_guests(page, list(window.rooms_config))
         await self._submit_search(page)
@@ -824,15 +824,22 @@ def pick_city_suggestion(
     """
     target = normalise_key(city)
     wanted = [normalise_key(c) for c in countries]
+    bare: Optional[int] = None
     for index, text in enumerate(texts):
         place, _, where = (text or "").replace("\n", " / ").partition(" / ")
         if normalise_key(place) != target:
             continue
         if any(token in place.lower() for token in _NON_CITY):
             continue
+        # Some cities are listed with no country at all ("Dakhla",
+        # "Laayoune"): usable, but only if no row names the right country.
+        if not where.strip():
+            if bare is None:
+                bare = index
+            continue
         # Hotel/address rows carry a street ("Cancun / PASEO NEPTUNO,65,
         # Gandia"); a country check rules those out when one is known.
         if wanted and not any(w in normalise_key(where) for w in wanted):
             continue
         return index
-    return None
+    return bare
