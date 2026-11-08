@@ -8,7 +8,12 @@ from __future__ import annotations
 
 import pytest
 
-from src.corridors import country_code_for, country_for, country_labels
+from src.corridors import (
+    country_code_for,
+    country_for,
+    country_labels,
+    nuitee_place_name,
+)
 from src.scrapers.booking import _card_name
 from src.scrapers.nuitee import pick_city_suggestion
 
@@ -54,6 +59,20 @@ SUGGESTIONS = {
     ],
     "London": ["London\nUK", "London Luton Airport (LTN)\nLuton, UK"],
     "Tangier": ["Tangier\nMorocco", "Tangier Island\nVirginia, USA"],
+    "Dakhla": [
+        "Dakhla",
+        "Dakhla-Oued Ed-Dahab",
+        "Dakhla For Stars\nPk 28 Trouke, Vers Dakhla, Dakhla",
+    ],
+    "Bruxelles": [
+        "Bruxelles\nBelgium",
+        "Brussels Airport (BRU)\nZaventem, Belgium",
+        "Bruxelles-Midi\nBrussels, Belgium",
+    ],
+    "Frankfurt am Main": [
+        "Frankfurt am Main\nGermany",
+        "Frankfurt (Oder)\nGermany",
+    ],
 }
 
 EXPECTED = {
@@ -67,6 +86,9 @@ EXPECTED = {
     "Bodrum": 0,
     "London": 0,
     "Tangier": 0,
+    "Dakhla": 0,
+    "Bruxelles": 0,
+    "Frankfurt am Main": 0,
 }
 
 
@@ -75,6 +97,10 @@ class TestPickCitySuggestion:
     def test_picks_the_city_in_its_country(self, city: str) -> None:
         index = pick_city_suggestion(SUGGESTIONS[city], city, country_labels(city))
         assert index == EXPECTED[city]
+
+    def test_row_naming_the_country_beats_a_bare_row(self) -> None:
+        texts = ["Dakhla", "Dakhla\nMorocco"]
+        assert pick_city_suggestion(texts, "Dakhla", ("Morocco",)) == 1
 
     def test_no_exact_place_means_no_pick(self) -> None:
         # Saudi Medina is "Madinah" on Nuitee; "Medina" only lists Spain.
@@ -92,6 +118,12 @@ class TestPickCitySuggestion:
     def test_empty_or_placeholder_list(self) -> None:
         assert pick_city_suggestion([], "Paris") is None
         assert pick_city_suggestion(["Near me\nNo Results Found"], "Paris") is None
+
+
+def test_nuitee_place_names() -> None:
+    assert nuitee_place_name("Brussels") == "Bruxelles"
+    assert nuitee_place_name("Frankfurt") == "Frankfurt am Main"
+    assert nuitee_place_name("Paris") == "Paris"
 
 
 class TestCountryLookup:

@@ -27,6 +27,7 @@ __all__ = [
     "country_for",
     "country_code_for",
     "country_labels",
+    "nuitee_place_name",
 ]
 
 CORRIDORS_PATH = Path(__file__).resolve().parent.parent / "config" / "corridors.json"
@@ -103,3 +104,17 @@ def country_labels(city: str, path: Path = CORRIDORS_PATH) -> tuple[str, ...]:
     """How Nuitee's autocomplete may write the city's country (empty if unknown)."""
     info = _COUNTRIES.get(country_for(city, path) or "")
     return info[1] if info else ()
+
+
+#: Cities Nuitee's autocomplete only lists under another name - live-read
+#: 2026-11: typing "Brussels" offers the airport and hotels, never the city.
+_NUITEE_PLACE_NAMES: dict[str, str] = {
+    "brussels": "Bruxelles",
+    "frankfurt": "Frankfurt am Main",
+    "langkawi": "Langkawi Island",
+}
+
+
+def nuitee_place_name(city: str) -> str:
+    """What to type into Nuitee's destination box for ``city``."""
+    return _NUITEE_PLACE_NAMES.get((city or "").strip().lower(), city)
