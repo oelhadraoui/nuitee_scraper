@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import logging.handlers
 import sys
 from pathlib import Path
 from typing import Optional
@@ -70,7 +71,14 @@ def setup_logging(
     if log_file is not None:
         log_file.parent.mkdir(parents=True, exist_ok=True)
         try:
-            file_handler = logging.FileHandler(log_file, encoding="utf-8")
+            # WatchedFileHandler (not FileHandler): if scraper.log is moved,
+            # deleted or replaced while the run is going (a backup, a reorg
+            # of output/), it reopens the path instead of writing on into
+            # an orphaned inode nobody can see - which also froze the
+            # docker healthcheck, since that checks this path's mtime.
+            file_handler = logging.handlers.WatchedFileHandler(
+                log_file, encoding="utf-8"
+            )
         except PermissionError as exc:
             # The classic first-run Docker issue: log_file.parent.mkdir()
             # above succeeds even when the directory ISN'T writable (it's
