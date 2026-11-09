@@ -4,7 +4,7 @@ place of Playwright.
 
 Why this module exists
 -----------------------
-A live investigation (Claude-in-Chrome against the real site, 2026-07) found
+A live investigation (real browser against the real site, 2026-07) found
 that a deep-linked ``searchresults.html?ss=...`` URL routinely renders a
 STALE "Unavailable on our site for your selected dates" card for properties
 that have real, bookable inventory - confirmed for three unrelated hotels,
