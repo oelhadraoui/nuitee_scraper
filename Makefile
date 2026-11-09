@@ -8,6 +8,8 @@
 COMPOSE      := docker compose
 SERVICE      := scraper
 OUTPUT       := ./output
+# current cycle folder written by scripts/run_cycle.sh (falls back to OUTPUT)
+RUN_OUTPUT   := $(if $(wildcard $(OUTPUT)/latest),$(OUTPUT)/latest,$(OUTPUT))
 PYTHON       := python3
 
 export UID   := $(shell id -u)
@@ -184,21 +186,21 @@ run-both: _ensure_env _ensure_output _ensure_input
 status:
 	@$(WORKERS) ps -a --format 'table {{.Name}}\t{{.Status}}' $(SCOPES) 2>/dev/null || true
 	@for s in $(SCOPES); do \
-		log=$(OUTPUT)/$$s/scraper.log; \
+		log=$(RUN_OUTPUT)/$$s/scraper.log; \
 		echo ""; echo "== $$s"; \
 		[ -f $$log ] || { echo "   (not started)"; continue; }; \
 		grep -E '\] \[[0-9]+/[0-9]+\]' $$log | tail -1 | sed 's/^/   last window : /'; \
 		grep -E 'finished in|Target reached' $$log | tail -1 | sed 's/^/   /'; \
 		echo "   log updated : $$(date -r $$log '+%F %T')"; \
-		[ -f $(OUTPUT)/$$s/prices.csv ] && echo "   rows        : $$(($$(wc -l < $(OUTPUT)/$$s/prices.csv) - 1)) ($$(($$(wc -l < $(OUTPUT)/$$s/prices_clean.csv) - 1)) clean)"; \
+		[ -f $(RUN_OUTPUT)/$$s/prices.csv ] && echo "   rows        : $$(($$(wc -l < $(RUN_OUTPUT)/$$s/prices.csv) - 1)) ($$(($$(wc -l < $(RUN_OUTPUT)/$$s/prices_clean.csv) - 1)) clean)"; \
 		n=$$(grep -cE 'exceeded|hung for' $$log); [ $$n -gt 0 ] && echo "   watchdog    : $$n stuck step(s) abandoned and skipped"; \
 	done; echo ""
 
 .PHONY: logs-national logs-international
 logs-national:
-	tail -f $(OUTPUT)/national/scraper.log
+	tail -f $(RUN_OUTPUT)/national/scraper.log
 logs-international:
-	tail -f $(OUTPUT)/international/scraper.log
+	tail -f $(RUN_OUTPUT)/international/scraper.log
 
 .PHONY: stop-both
 stop-both:
