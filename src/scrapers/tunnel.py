@@ -8,7 +8,7 @@ page to the booking page and read the TRUE PAYABLE PRICE - the figure that
 includes taxes, city tax, service fees and resort fees, none of which appear
 on the results-list card.
 
-Real site architecture (verified live via the Claude-in-Chrome extension,
+Real site architecture (verified live in a real browser session,
 2026-07 - see the investigation that replaced the original 5-panel design)
 ------------------------------------------------------------------------
 Nuitee's site is a Vue 3 / PrimeVue SPA backed by LiteAPI. It is NOT the

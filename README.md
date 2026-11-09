@@ -172,7 +172,7 @@ scale up first.
 This is the core of the implementation (`src/scrapers/tunnel.py`,
 `src/scrapers/nuitee.py`) the direct answer to "how do we get the true
 final payable price, not the advertised one" (§1). Its design reflects the
-**real site**, confirmed by live inspection (Claude-in-Chrome DOM/network
+**real site**, confirmed by live inspection (browser DOM/network
 inspection against the actual Nuitée white-label deployment) rather than
 assumed from a generic booking-flow template see
 [§3.4](#3-how-the-tunnel-navigation-works) for what that inspection changed
@@ -268,7 +268,7 @@ The first version of this module modelled a generic 5-panel reservation flow
 independently classified via a `detect` cascade race) and read the detail URL
 straight off each card's `href`. Running it against the live site surfaced a
 0% tunnel-success rate; inspecting the actual DOM and network traffic via the
-Claude-in-Chrome extension showed both assumptions were wrong for this
+browser developer tools showed both assumptions were wrong for this
 property: there is no `href` to read, and there are two pages, not five
 independently-arriving panels. §3.2 and §3.3 describe what replaced them.
 `PanelKind` keeps the old panel names for backward compatibility with any

@@ -228,7 +228,7 @@ class TestRoomRanking:
 # Real-site architecture: 2-page flow (room_select -> booking_page)
 # ---------------------------------------------------------------------------
 #
-# The site was live-verified (Claude-in-Chrome, 2026-07) to be exactly two
+# The site was live-verified (real browser, 2026-07) to be exactly two
 # pages, not a 5-panel SPA: /hotels/{id} (room_select) then /booking (a
 # single page combining guest form + summary + payment). There is no
 # "classify which panel we're on" step any more - these tests instead cover
