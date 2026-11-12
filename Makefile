@@ -8,8 +8,18 @@
 COMPOSE      := docker compose
 SERVICE      := scraper
 OUTPUT       := ./output
-# current cycle folder written by scripts/run_cycle.sh (falls back to OUTPUT)
-RUN_OUTPUT   := $(if $(wildcard $(OUTPUT)/latest),$(OUTPUT)/latest,$(OUTPUT))
+# Which run status / merge / results / report / shortlist / export work on.
+# scripts/run_cycle.sh writes each cycle to output/runs/run_<start>/ and
+# points output/latest at the current one.
+#   make merge                            -> current run (output/latest)
+#   make merge RUN=run_2026-11-09_14-33   -> that run (a path also works)
+# With no runs at all, it falls back to the legacy flat ./output layout.
+RUN          ?=
+LATEST_RUN   := $(notdir $(shell readlink $(OUTPUT)/latest 2>/dev/null))
+RUN_NAME     := $(notdir $(patsubst %/,%,$(or $(RUN),$(LATEST_RUN))))
+RUN_OUTPUT   := $(if $(RUN_NAME),$(OUTPUT)/runs/$(RUN_NAME),$(OUTPUT))
+# Container-side store for that run (the CLI reads/writes STORAGE_OUTPUT_DIR).
+RUN_STORE    := -e STORAGE_OUTPUT_DIR=/app/$(patsubst ./%,%,$(RUN_OUTPUT))
 PYTHON       := python3
 
 export UID   := $(shell id -u)
@@ -63,7 +73,10 @@ help:
 	@echo "    make run-national        Moroccan cities only   -> output/national/"
 	@echo "    make run-international   International only     -> output/international/"
 	@echo "    make status              Progress of both workers"
+	@echo "    make merge               Merge national + international of the current run"
 	@echo "    make results             Merge both + report + shortlist (any time)"
+	@echo "                             add RUN=run_YYYY-MM-DD_HH-MM for a specific run"
+	@echo "                             (also: status, report, shortlist, export*)"
 	@echo "    make stop-both           Stop both (finished windows are kept)"
 	@echo ""
 	@echo "  QUALITY"
@@ -209,13 +222,14 @@ stop-both:
 # Fold both scope stores into output/prices.csv (older rows already there are
 # kept), then report + shortlist. Safe to run while the workers are running.
 .PHONY: merge results
-merge: _ensure_output _ensure_input
-	$(COMPOSE) run --rm $(SERVICE) merge $(addprefix output/,$(SCOPES))
+merge: _ensure_output _ensure_input _ensure_run
+	@echo "[merge] $(addprefix $(RUN_OUTPUT)/,$(SCOPES)) -> $(RUN_OUTPUT)/prices.csv"
+	$(COMPOSE) run --rm -T $(RUN_STORE) $(SERVICE) merge $(addprefix $(RUN_OUTPUT)/,$(SCOPES))
 
 results: merge
-	$(COMPOSE) run --rm $(SERVICE) report
-	$(COMPOSE) run --rm $(SERVICE) shortlist $(if $(MIN_PCT),--min-pct $(MIN_PCT),)
-	@echo "[results] output/prices_clean.csv  output/shortlist.csv  output/quality_report.json"
+	$(COMPOSE) run --rm -T $(RUN_STORE) $(SERVICE) report
+	$(COMPOSE) run --rm -T $(RUN_STORE) $(SERVICE) shortlist $(if $(MIN_PCT),--min-pct $(MIN_PCT),)
+	@echo "[results] $(RUN_OUTPUT)/: prices.csv  prices_clean.csv  shortlist.csv  quality_report.json"
 
 .PHONY: start
 start: _ensure_env _ensure_output _ensure_input
@@ -246,24 +260,24 @@ verify-dry: _ensure_output _ensure_input
 	$(COMPOSE) run --rm $(SERVICE) verify --mode all --dry-run
 
 .PHONY: report
-report: _ensure_output _ensure_input
-	$(COMPOSE) run --rm $(SERVICE) report
+report: _ensure_output _ensure_input _ensure_run
+	$(COMPOSE) run --rm -T $(RUN_STORE) $(SERVICE) report
 
 .PHONY: export
-export: _ensure_output _ensure_input
-	$(COMPOSE) run --rm $(SERVICE) export
+export: _ensure_output _ensure_input _ensure_run
+	$(COMPOSE) run --rm -T $(RUN_STORE) $(SERVICE) export
 
 .PHONY: export-clean
-export-clean: _ensure_output _ensure_input
-	$(COMPOSE) run --rm $(SERVICE) export --clean-only
+export-clean: _ensure_output _ensure_input _ensure_run
+	$(COMPOSE) run --rm -T $(RUN_STORE) $(SERVICE) export --clean-only
 
 .PHONY: shortlist
-shortlist: _ensure_output _ensure_input
-	$(COMPOSE) run --rm $(SERVICE) shortlist $(if $(MIN_PCT),--min-pct $(MIN_PCT),)
+shortlist: _ensure_output _ensure_input _ensure_run
+	$(COMPOSE) run --rm -T $(RUN_STORE) $(SERVICE) shortlist $(if $(MIN_PCT),--min-pct $(MIN_PCT),)
 
 .PHONY: export-parquet
-export-parquet: _ensure_output _ensure_input
-	$(COMPOSE) run --rm $(SERVICE) export --parquet
+export-parquet: _ensure_output _ensure_input _ensure_run
+	$(COMPOSE) run --rm -T $(RUN_STORE) $(SERVICE) export --parquet
 
 # ---------------------------------------------------------------------------
 # Ops
@@ -326,6 +340,13 @@ _ensure_env:
 	fi
 
 .PHONY: _ensure_output
+_ensure_run:
+	@if [ -n "$(RUN)" ] && [ ! -d "$(RUN_OUTPUT)" ]; then \
+		echo "[error] run '$(RUN)' not found: $(RUN_OUTPUT) does not exist."; \
+		echo "        available: $$(ls $(OUTPUT)/runs 2>/dev/null | tr '\n' ' ')"; exit 1; \
+	fi
+	@echo "[run] $(RUN_OUTPUT)"
+
 _ensure_output:
 	@mkdir -p $(OUTPUT)
 	@# The container writes here as the "scraper" user, whose UID/GID were
