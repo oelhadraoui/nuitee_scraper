@@ -114,6 +114,10 @@ _NOISE_PATTERNS = [
     r"\b\d{4}-\d{2}-\d{2}\b",             # ISO dates: 2026-08-04
     r"\b\d{1,2}/\d{1,2}/\d{2,4}\b",       # slash dates
     r"\b\d\.\d\b",                        # lone review scores: 8.7, 4.5
+    # Discount badges: "29% OFF". On a EUR-priced Nuitee card the 150 MAD
+    # floor scales down to ~14 EUR, so "29" passed it and won a "min" read
+    # as 29 EUR = 316.10 MAD (live, TURIM Boulevard Lisbon, 2026-11-14).
+    r"\d+(?:[.,]\d+)?\s*%",
     # "Aug 4, 2026" / "Aug 4-7, 2026" / "4 Aug 2026" style dates. A bare
     # 4-digit year (e.g. the "2026" in a check-in/check-out line) otherwise
     # sails straight through every other filter above - it is >= min_value

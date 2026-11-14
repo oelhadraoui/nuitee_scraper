@@ -204,6 +204,9 @@ class TestAddonAmounts:
             ("MAD 1,886\nMAD 261.60 taxes and fees", 1886.0),
             ("€ 173 € 21 city tax", 173 * 10.90),
             ("MAD 1,438.80 Includes taxes and fees", 1438.80),
+            # Discount badge on a EUR card (live: TURIM Lisbon read 316.10).
+            ("29% OFF | €233 | €167 | / night", 167 * 10.90),
+            ("SAVE 31% TODAY! MAD 2,443 MAD 1,694 / night", 1694.0),
         ],
     )
     def test_rate_wins_over_city_tax(self, text: str, expected: float) -> None:
