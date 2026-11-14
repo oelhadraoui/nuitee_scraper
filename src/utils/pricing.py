@@ -223,6 +223,12 @@ def extract_amounts(text: str, min_value: float = 0.0) -> list[float]:
 _ADDON_AMOUNT_RE = re.compile(
     r"\+\s*(?:[A-Za-z]{2,4}\.?|[€$£])?\s*\d[\d,.   ]*",
 )
+#: "MAD 261.60 taxes and fees" with no "+": an amount labelled as tax/fees.
+_LABELLED_FEE_RE = re.compile(
+    r"(?:[A-Za-z]{2,4}\.?|[€$£])?[  ]*\d[\d,.  ]*[  ]*"
+    r"(?=(?:taxes?|fees|charges|frais|city[  ]+tax)\b)",
+    re.IGNORECASE,
+)
 
 
 def drop_addon_amounts(text: str) -> str:
@@ -235,7 +241,9 @@ def drop_addon_amounts(text: str) -> str:
     tunnel then ranked that offer cheapest and clicked the wrong room, and
     the harvest stored the tax as the display price.
     """
-    return _ADDON_AMOUNT_RE.sub(" ", text or "")
+    # Labelled fees first: once "+MAD 239" is gone, the rate itself would sit
+    # right before "taxes and fees" and look like a labelled fee.
+    return _ADDON_AMOUNT_RE.sub(" ", _LABELLED_FEE_RE.sub(" ", text or ""))
 
 
 def surcharge_amount(text: str, default_currency: str = "MAD") -> Optional[float]:

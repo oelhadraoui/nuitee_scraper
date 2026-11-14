@@ -337,7 +337,10 @@ class TunnelNavigator:
             return
 
         result.room_label = clicked_offer.label
-        if result.display_price is None:
+        # The clicked offer's own rate beats the results-card figure the walk
+        # started with: it is the room actually priced, and the results card
+        # can carry a city tax instead of the rate (Paris, live 2026-11-14).
+        if clicked_offer.display_price is not None:
             result.display_price = clicked_offer.display_price
 
         result.panels_visited.append(PanelKind.BOOKING_PAGE.value)

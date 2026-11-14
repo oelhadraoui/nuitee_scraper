@@ -200,6 +200,10 @@ class TestAddonAmounts:
             ("MAD 1,299 + MAD 163.50 taxes and fees", 1299.0),
             ("€ 196 + € 22 taxes and fees", 196 * 10.90),
             ("MAD 980 +414.20 local fees", 980.0),
+            # Results card, no "+": Paris city tax printed under the rate.
+            ("MAD 1,886\nMAD 261.60 taxes and fees", 1886.0),
+            ("€ 173 € 21 city tax", 173 * 10.90),
+            ("MAD 1,438.80 Includes taxes and fees", 1438.80),
         ],
     )
     def test_rate_wins_over_city_tax(self, text: str, expected: float) -> None:
