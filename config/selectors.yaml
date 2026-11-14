@@ -279,8 +279,9 @@ nuitee:
       # `<div>` with utility classes only). The parser instead reads the
       # WHOLE rate-card text with a "min" strategy, which correctly prefers
       # the discounted price over a struck-through original ("MAD 701" ...
-      # "MAD 591" -> 591) while the 150 MAD floor discards the "+MAD 60
-      # taxes and fees" fragment. Kept as a cascade for when a future
+      # "MAD 591" -> 591). The "+MAD 60 taxes and fees" fragment is dropped
+      # before parsing (drop_addon_amounts) - the 150 MAD floor alone let a
+      # Paris/Lisbon city tax win as the "cheapest" rate. Kept as a cascade for when a future
       # redesign adds a dedicated price element.
       room_price:
         - '[class*="align-items-baseline"]'
@@ -449,6 +450,11 @@ booking:
     - '.prco-valign__middle-helper'
     - 'span[aria-label*="MAD"]'
     - 'span[aria-label*="price"]'
+
+  # "+MAD 263 taxes and fees" (added to the price) or "Includes taxes and
+  # fees" (nothing to add) - which one depends on the visitor's country.
+  card_taxes:
+    - '[data-testid="taxes-and-charges"]'
 
   card_link:
     - 'a[data-testid="title-link"]'

@@ -6,10 +6,12 @@ import pytest
 
 from src.utils.pricing import (
     detect_currency,
+    drop_addon_amounts,
     extract_amounts,
     format_mad,
     get_fx_rate,
     parse_price,
+    surcharge_amount,
     to_mad,
 )
 
@@ -179,3 +181,58 @@ class TestBounds:
         assert parse_price("").amount_mad is None
         assert format_mad(None) == ""
         assert format_mad(1250.5) == "1250.50"
+
+
+class TestAddonAmounts:
+    """A "+<amount>" surcharge on a Nuitee card must never win as the rate."""
+
+    def _card(self, text: str):
+        return parse_price(drop_addon_amounts(text), strategy="min")
+
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            # Live: Vincci Larios Diez - the tunnel clicked 'Offer #14 @ 239.8'.
+            ("MAD 2,136.40 +MAD 239.80 taxes and fees", 2136.40),
+            ("Room with Breakfast\nMAD 2,147\n(+MAD 250.70 taxes and fees)", 2147.0),
+            # Struck-through original still loses to the discounted rate.
+            ("MAD 701 MAD 591 +MAD 60 taxes and fees", 591.0),
+            ("MAD 1,299 + MAD 163.50 taxes and fees", 1299.0),
+            ("€ 196 + € 22 taxes and fees", 196 * 10.90),
+            ("MAD 980 +414.20 local fees", 980.0),
+        ],
+    )
+    def test_rate_wins_over_city_tax(self, text: str, expected: float) -> None:
+        assert self._card(text).amount_mad == pytest.approx(expected)
+
+    def test_plain_rate_untouched(self) -> None:
+        assert drop_addon_amounts("MAD 1,450") == "MAD 1,450"
+        assert self._card("MAD 1,450 per night").amount_mad == 1450.0
+
+    def test_only_a_surcharge_gives_no_price(self) -> None:
+        assert self._card("+MAD 239.80 taxes and fees").ok is False
+
+    def test_empty(self) -> None:
+        assert drop_addon_amounts(None) == ""
+
+
+class TestBookingTaxesLine:
+    """Booking's card taxes line, as read live from Morocco and from France."""
+
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("+MAD 263 taxes and fees", 263.0),
+            ("+MAD 2,154 taxes", 2154.0),
+            ("+ MAD 1,368.50 taxes and charges", 1368.5),
+            ("+€ 24 taxes and charges", 24 * 10.90),
+        ],
+    )
+    def test_separate_taxes_are_read(self, text: str, expected: float) -> None:
+        assert surcharge_amount(text) == pytest.approx(expected)
+
+    @pytest.mark.parametrize(
+        "text", ["Includes taxes and fees", "Includes taxes and charges", "", None]
+    )
+    def test_included_or_missing_adds_nothing(self, text) -> None:
+        assert surcharge_amount(text) is None

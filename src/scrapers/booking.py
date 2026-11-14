@@ -119,7 +119,7 @@ from src.utils.hotel_ids import (
     parse_property_index,
 )
 from src.utils.logging_setup import get_logger
-from src.utils.pricing import parse_price
+from src.utils.pricing import parse_price, surcharge_amount
 from src.utils.retry import polite_delay
 from src.utils.selectors import SelectorRegistry
 from src.utils.text import contains_city, fuzzy_score, normalise_display, normalise_key
@@ -904,6 +904,26 @@ class BookingScraper:
     # ======================================================================
 
     async def _extract_card_price(self, card) -> Optional[float]:
+        """
+        Whole-stay price with taxes, so it compares with Nuitee's payable total.
+
+        Depending on the visitor's country Booking either folds taxes into the
+        card price ("Includes taxes and fees") or prints them apart
+        ("+MAD 263 taxes and fees"); the latter is added back here.
+        """
+        price = await self._extract_card_base_price(card)
+        if price is None:
+            return None
+        taxes_text = await self.registry.get_optional("booking.card_taxes").text(
+            card, timeout=800
+        )
+        taxes = surcharge_amount(taxes_text, default_currency=self._cfg.currency)
+        if taxes:
+            log.debug("adding separate Booking taxes %.2f to %.2f", taxes, price)
+            return round(price + taxes, 2)
+        return price
+
+    async def _extract_card_base_price(self, card) -> Optional[float]:
         """
         Read the price from a property card.
 

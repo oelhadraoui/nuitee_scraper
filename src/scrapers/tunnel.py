@@ -62,7 +62,7 @@ from src.utils.browser import (
     safe_text_no_strike,
 )
 from src.utils.logging_setup import get_logger
-from src.utils.pricing import parse_price
+from src.utils.pricing import drop_addon_amounts, parse_price
 from src.utils.selectors import SelectorRegistry
 from src.utils.text import normalise_display, slugify, strip_accents
 
@@ -621,7 +621,7 @@ class TunnelNavigator:
                     raw_price = full_card_text
 
                 parsed = parse_price(
-                    raw_price or "",
+                    drop_addon_amounts(raw_price),
                     min_value=self.settings.quality.min_price_mad,
                     max_value=self.settings.quality.max_price_mad,
                     default_currency=self.settings.nuitee.currency,

@@ -43,7 +43,7 @@ from src.utils.browser import (
 )
 from src.utils.hotel_ids import IdentityCapture
 from src.utils.logging_setup import get_logger
-from src.utils.pricing import parse_price
+from src.utils.pricing import drop_addon_amounts, parse_price
 from src.utils.selectors import SelectorRegistry
 from src.utils.text import normalise_display, normalise_key, parse_distance_km
 
@@ -636,7 +636,7 @@ class NuiteeScraper:
 
                 raw_price = await price_cascade.text(card, timeout=500)
                 parsed = parse_price(
-                    raw_price or "",
+                    drop_addon_amounts(raw_price),
                     min_value=self.settings.quality.min_price_mad,
                     max_value=self.settings.quality.max_price_mad,
                     default_currency=self._cfg.currency,

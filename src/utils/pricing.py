@@ -219,6 +219,45 @@ def extract_amounts(text: str, min_value: float = 0.0) -> list[float]:
     return amounts
 
 
+#: "+MAD 239.80", "+ € 22", "+239" - a "+" marks a surcharge, never the price.
+_ADDON_AMOUNT_RE = re.compile(
+    r"\+\s*(?:[A-Za-z]{2,4}\.?|[€$£])?\s*\d[\d,.   ]*",
+)
+
+
+def drop_addon_amounts(text: str) -> str:
+    """
+    Remove "+<amount>" surcharge fragments from a rate/result card's text.
+
+    Nuitee cards print the stay's taxes next to the rate ("MAD 2,136
+    +MAD 239.80 taxes and fees"). Read with a "min" strategy, a city tax over
+    the 150 MAD floor (Paris, Lisbon, Zurich...) beat the real rate: the
+    tunnel then ranked that offer cheapest and clicked the wrong room, and
+    the harvest stored the tax as the display price.
+    """
+    return _ADDON_AMOUNT_RE.sub(" ", text or "")
+
+
+def surcharge_amount(text: str, default_currency: str = "MAD") -> Optional[float]:
+    """
+    MAD value of a "+<amount>" surcharge line, or None.
+
+    Booking prints its card taxes line as "+MAD 263 taxes and fees" for some
+    visitor countries (seen from Morocco) and "Includes taxes and fees" for
+    others (seen from France); only the former has an amount to add.
+    """
+    match = _ADDON_AMOUNT_RE.search(text or "")
+    if not match:
+        return None
+    parsed = parse_price(
+        match.group().lstrip("+"),
+        min_value=1.0,
+        default_currency=default_currency,
+        strategy="first",
+    )
+    return parsed.amount_mad if parsed.ok else None
+
+
 def parse_price(
     text: str,
     *,
